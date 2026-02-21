@@ -4,225 +4,75 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="theme-color" content="#0a0e17">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Microgrid Monitor</title>
     
-    <!-- Chart.js Library -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     
-    <!-- Firebase SDK 9+ (Modular) -->
     <script type="module">
-        // ============================================================================
-        // FIREBASE CONFIGURATION
-        // ============================================================================
-        /*
-         * SETUP INSTRUCTIONS:
-         * 1. Go to Firebase Console: https://console.firebase.google.com/
-         * 2. Select your project
-         * 3. Project Settings (gear icon) → General → Your apps → Web app
-         * 4. Copy the firebaseConfig object and paste below
-         */
-        
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
         import { getDatabase, ref, onValue } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
 
         const firebaseConfig = {
-  apiKey: "AIzaSyD2nhMhyfPMiVPNWUJ8OkJJIKpg_6Hbyj8",
-  authDomain: "solaris-4ca9a.firebaseapp.com",
-  databaseURL: "https://solaris-4ca9a-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "solaris-4ca9a",
-  storageBucket: "solaris-4ca9a.firebasestorage.app",
-  messagingSenderId: "959617229391",
-  appId: "1:959617229391:web:581117f72c0a40b48cc03a"
-};
+            apiKey: "AIzaSyD2nhMhyfPMiVPNWUJ8OkJJIKpg_6Hbyj8",
+            authDomain: "solaris-4ca9a.firebaseapp.com",
+            databaseURL: "https://solaris-4ca9a-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "solaris-4ca9a",
+            storageBucket: "solaris-4ca9a.firebasestorage.app",
+            messagingSenderId: "959617229391",
+            appId: "1:959617229391:web:581117f72c0a40b48cc03a"
+        };
 
-        // Initialize Firebase
         const app = initializeApp(firebaseConfig);
         const database = getDatabase(app);
 
-        // ============================================================================
-        // CLIENT-SIDE DATA BUFFERING SYSTEM
-        // ============================================================================
-        /*
-         * PROBLEM STATEMENT:
-         * Firebase Realtime Database only stores the CURRENT value for each node.
-         * When new data arrives, it overwrites the previous value.
-         * This means we lose historical data needed for time-series charts.
-         * 
-         * SOLUTION: CLIENT-SIDE CIRCULAR BUFFERS
-         * 
-         * ARCHITECTURE:
-         * - Fixed-size arrays (capacity: 30 data points)
-         * - FIFO (First-In-First-Out) structure
-         * - When buffer is full, oldest data is automatically removed
-         * - Enables real-time time-series visualization without server-side storage
-         * 
-         * ACADEMIC CONTEXT:
-         * This is an "Edge Computing" design pattern:
-         * - Data processing happens at the client (edge device)
-         * - Reduces server storage costs
-         * - Decreases query latency
-         * - Demonstrates efficient resource utilization in IoT systems
-         * 
-         * BUFFER MANAGEMENT ALGORITHM:
-         * 1. New data arrives from Firebase
-         * 2. Append to end of buffer array (push operation)
-         * 3. Check buffer length
-         * 4. If length > BUFFER_SIZE, remove first element (shift operation)
-         * 5. Result: Sliding window of last N data points
-         * 
-         * TIME COMPLEXITY: O(n) where n = BUFFER_SIZE (due to shift operation)
-         * SPACE COMPLEXITY: O(n) - constant memory usage
-         * 
-         * OPTIMIZATION NOTE:
-         * For production systems with larger buffers, consider using a proper
-         * circular buffer implementation with head/tail pointers for O(1) operations.
-         */
+        const BUFFER_SIZE = 30;  
         
-        const BUFFER_SIZE = 30;  // Store last 30 data points (~90 seconds at 3s intervals)
-        
-        // Main Plant Data Buffers
         const plantBuffers = {
-            timestamps: [],        // Time labels (HH:MM:SS format)
-            solarPower: [],        // Solar generation (W)
-            solarTemp: [],         // Solar panel temperature (°C)
-            loadPower: [],         // Total load consumption (W)
-            batterySOC: [],        // State of Charge (%)
-            batteryTemp: []        // Battery temperature (°C)
+            timestamps: [],        
+            solarPower: [],        
+            solarTemp: [],         
+            loadPower: [],         
+            batterySOC: [],        
+            batteryTemp: []        
         };
         
-        // Current values (for real-time displays)
         const currentPlantData = {
             solarPower: 0,
             solarTemp: 0,
-            loadPower: 0,
             batterySOC: 0,
             batteryTemp: 0,
             timestamp: 0
         };
         
-        // House Data Storage (for Village View)
-        /*
-         * HOUSE DATA STRUCTURE:
-         * Key: House ID (101-110)
-         * Value: { usage_kwh, grid_voltage, timestamp, status }
-         * 
-         * STATUS LOGIC:
-         * - 'normal': usage_kwh < 50 (Green indicator)
-         * - 'high': usage_kwh >= 50 (Red indicator)
-         */
         const houseData = {};
         for (let id = 101; id <= 110; id++) {
-            houseData[id] = {
-                usage_kwh: 0,
-                grid_voltage: 0,
-                timestamp: 0,
-                status: 'normal'
-            };
+            houseData[id] = { usage_kwh: 0, grid_voltage: 0, timestamp: 0 };
         }
         
-        // ============================================================================
-        // VIEW MANAGEMENT SYSTEM (SINGLE PAGE APP NAVIGATION)
-        // ============================================================================
-        /*
-         * VIEW ARCHITECTURE:
-         * 
-         * This is a Single Page Application (SPA) with two views:
-         * 1. VIEW 1: Main Dashboard (default)
-         * 2. VIEW 2: Village Load Details (hidden by default)
-         * 
-         * NAVIGATION PATTERN: Show/Hide (not page reload)
-         * Benefits:
-         * - Preserves application state (buffers, Firebase connections)
-         * - No page reload = faster transitions
-         * - Better mobile UX (app-like feel)
-         * 
-         * IMPLEMENTATION:
-         * - Each view is a <div> container
-         * - Only one view visible at a time (controlled by CSS display property)
-         * - Navigation functions toggle visibility
-         * 
-         * ACADEMIC CONTEXT:
-         * This demonstrates "Client-Side Routing" - a core SPA concept
-         * Modern frameworks (React, Vue, Angular) use similar patterns
-         */
-        
-        function showDashboardView() {
+        // --- VIEW MANAGEMENT ---
+        window.showDashboardView = () => {
             document.getElementById('dashboardView').style.display = 'block';
             document.getElementById('villageView').style.display = 'none';
-            console.log('📊 Switched to Dashboard View');
-        }
+        };
         
-        function showVillageView() {
+        window.showVillageView = () => {
             document.getElementById('dashboardView').style.display = 'none';
             document.getElementById('villageView').style.display = 'block';
-            updateVillageCards();  // Refresh village data display
-            console.log('🏘️ Switched to Village View');
-        }
+            updateVillageCards(); 
+        };
         
-        // Make functions globally accessible
-        window.showDashboardView = showDashboardView;
-        window.showVillageView = showVillageView;
-        
-        // ============================================================================
-        // BUFFER MANAGEMENT FUNCTIONS
-        // ============================================================================
-        
+        // --- UTILS ---
         function addToBuffer(buffer, value) {
-            /*
-             * FUNCTION: Add new data point to circular buffer
-             * 
-             * PARAMETERS:
-             * - buffer: Array reference (modified in-place)
-             * - value: New data point to add
-             * 
-             * ALGORITHM STEPS:
-             * 1. Append value to end of array
-             * 2. Check if buffer exceeds maximum size
-             * 3. If yes, remove oldest element from front
-             * 
-             * RESULT: Maintains sliding window of most recent data
-             */
             buffer.push(value);
-            if (buffer.length > BUFFER_SIZE) {
-                buffer.shift();  // Remove oldest element (FIFO)
-            }
+            if (buffer.length > BUFFER_SIZE) buffer.shift();  
         }
         
         function formatTimestamp(epochMs) {
-            /*
-             * FUNCTION: Convert Unix epoch timestamp to human-readable time
-             * INPUT: Milliseconds since Jan 1, 1970 (e.g., 1704067200000)
-             * OUTPUT: HH:MM:SS format (e.g., "14:30:45")
-             * 
-             * WHY NEEDED:
-             * - Firebase stores timestamps as epoch milliseconds
-             * - Charts need readable time labels
-             * - Users need to understand when data was captured
-             */
             const date = new Date(epochMs);
-            return date.toLocaleTimeString('en-US', { 
-                hour: '2-digit', 
-                minute: '2-digit', 
-                second: '2-digit',
-                hour12: false 
-            });
+            return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
         }
         
         function calculateTotalLoad() {
-            /*
-             * FUNCTION: Calculate total load from all houses
-             * 
-             * LOGIC:
-             * - Iterate through all house data (IDs 101-110)
-             * - Sum up usage_kwh values
-             * - This represents aggregate village consumption
-             * 
-             * ACADEMIC NOTE:
-             * In a real microgrid, this would be measured by a central meter.
-             * Here, we calculate it from distributed house meters (IoT approach).
-             */
             let total = 0;
             for (let id = 101; id <= 110; id++) {
                 total += houseData[id].usage_kwh;
@@ -230,531 +80,181 @@
             return total;
         }
         
-        // ============================================================================
-        // CHART INITIALIZATION
-        // ============================================================================
-        
+        // --- CHARTS ---
         let physicsChart = null;
         let balanceChart = null;
         
         function initializeCharts() {
-            /*
-             * FUNCTION: Initialize Chart.js visualizations
-             * 
-             * CHART CONFIGURATION PHILOSOPHY:
-             * - Cyberpunk/sci-fi aesthetic (dark background, neon colors)
-             * - Mobile-optimized (small fonts, compact legends)
-             * - Real-time updates (smooth animations)
-             * 
-             * CHART A: Physics Correlation (Solar Power vs Temperature)
-             * PURPOSE: Demonstrate inverse relationship
-             * - As panel temperature rises, efficiency typically decreases
-             * - Physics principle: Semiconductors lose efficiency at high temps
-             * - Dual Y-axis allows comparing different units (W vs °C)
-             * 
-             * CHART B: Grid Balance (Generation vs Consumption)
-             * PURPOSE: Energy balance monitoring
-             * - Shows if solar generation meets demand
-             * - Identifies surplus (battery charging) or deficit (battery discharging)
-             */
-            
-            // -----------------------------------------------
-            // CHART A: PHYSICS CORRELATION
-            // -----------------------------------------------
             const physicsCtx = document.getElementById('physicsChart').getContext('2d');
             physicsChart = new Chart(physicsCtx, {
                 type: 'line',
-                data: {
-                    labels: plantBuffers.timestamps,
-                    datasets: [
-                        {
-                            label: 'Solar Power (W)',
-                            data: plantBuffers.solarPower,
-                            borderColor: '#00ff88',
-                            backgroundColor: 'rgba(0, 255, 136, 0.15)',
-                            borderWidth: 2.5,
-                            fill: true,
-                            tension: 0.4,
-                            yAxisID: 'y-power',
-                            pointRadius: 0,
-                            pointHoverRadius: 5,
-                            pointHoverBackgroundColor: '#00ff88',
-                            pointHoverBorderColor: '#ffffff',
-                            pointHoverBorderWidth: 2
-                        },
-                        {
-                            label: 'Panel Temp (°C)',
-                            data: plantBuffers.solarTemp,
-                            borderColor: '#ff6b35',
-                            backgroundColor: 'transparent',
-                            borderWidth: 2.5,
-                            borderDash: [6, 4],
-                            fill: false,
-                            tension: 0.4,
-                            yAxisID: 'y-temp',
-                            pointRadius: 0,
-                            pointHoverRadius: 5,
-                            pointHoverBackgroundColor: '#ff6b35',
-                            pointHoverBorderColor: '#ffffff',
-                            pointHoverBorderWidth: 2
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    interaction: {
-                        mode: 'index',
-                        intersect: false
-                    },
-                    plugins: {
-                        legend: {
-                            display: true,
-                            position: 'top',
-                            labels: {
-                                color: '#00ffff',
-                                font: { size: 11, family: 'Rajdhani, sans-serif', weight: '500' },
-                                usePointStyle: true,
-                                padding: 12,
-                                boxWidth: 12,
-                                boxHeight: 12
-                            }
-                        },
-                        tooltip: {
-                            backgroundColor: 'rgba(10, 14, 23, 0.95)',
-                            titleColor: '#00ffff',
-                            bodyColor: '#ffffff',
-                            borderColor: '#00ffff',
-                            borderWidth: 1,
-                            padding: 12,
-                            displayColors: true,
-                            cornerRadius: 8,
-                            titleFont: { size: 12, family: 'Rajdhani, sans-serif', weight: '600' },
-                            bodyFont: { size: 11, family: 'Rajdhani, sans-serif' }
-                        }
-                    },
+                data: { labels: plantBuffers.timestamps, datasets: [
+                    { label: 'Solar Power (W)', data: plantBuffers.solarPower, borderColor: '#00ff88', backgroundColor: 'rgba(0, 255, 136, 0.15)', borderWidth: 2.5, fill: true, tension: 0.4, yAxisID: 'y-power', pointRadius: 0 },
+                    { label: 'Panel Temp (°C)', data: plantBuffers.solarTemp, borderColor: '#ff6b35', backgroundColor: 'transparent', borderWidth: 2.5, borderDash: [6, 4], fill: false, tension: 0.4, yAxisID: 'y-temp', pointRadius: 0 }
+                ]},
+                options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
                     scales: {
-                        x: {
-                            display: true,
-                            grid: { 
-                                color: 'rgba(0, 255, 255, 0.08)',
-                                drawBorder: false,
-                                lineWidth: 1
-                            },
-                            ticks: { 
-                                color: '#00ffff',
-                                font: { size: 10, family: 'Rajdhani, sans-serif' },
-                                maxRotation: 0,
-                                autoSkipPadding: 15
-                            }
-                        },
-                        'y-power': {
-                            type: 'linear',
-                            display: true,
-                            position: 'left',
-                            title: {
-                                display: true,
-                                text: 'Power (W)',
-                                color: '#00ff88',
-                                font: { size: 11, family: 'Rajdhani, sans-serif', weight: '600' }
-                            },
-                            grid: { 
-                                color: 'rgba(0, 255, 136, 0.08)',
-                                drawBorder: false
-                            },
-                            ticks: { 
-                                color: '#00ff88',
-                                font: { size: 10, family: 'Rajdhani, sans-serif' }
-                            }
-                        },
-                        'y-temp': {
-                            type: 'linear',
-                            display: true,
-                            position: 'right',
-                            title: {
-                                display: true,
-                                text: 'Temp (°C)',
-                                color: '#ff6b35',
-                                font: { size: 11, family: 'Rajdhani, sans-serif', weight: '600' }
-                            },
-                            grid: { 
-                                drawOnChartArea: false,
-                                drawBorder: false
-                            },
-                            ticks: { 
-                                color: '#ff6b35',
-                                font: { size: 10, family: 'Rajdhani, sans-serif' }
-                            }
-                        }
+                        x: { grid: { color: 'rgba(0, 255, 255, 0.08)' }, ticks: { color: '#00ffff' } },
+                        'y-power': { type: 'linear', position: 'left', title: { display: true, text: 'Power (W)', color: '#00ff88' }, grid: { color: 'rgba(0, 255, 136, 0.08)' }, ticks: { color: '#00ff88' } },
+                        'y-temp': { type: 'linear', position: 'right', title: { display: true, text: 'Temp (°C)', color: '#ff6b35' }, grid: { drawOnChartArea: false }, ticks: { color: '#ff6b35' } }
                     },
-                    animation: {
-                        duration: 500,
-                        easing: 'easeInOutQuart'
-                    }
+                    animation: { duration: 0 } // Disabled animation for real-time speed
                 }
             });
             
-            // -----------------------------------------------
-            // CHART B: GRID BALANCE
-            // -----------------------------------------------
             const balanceCtx = document.getElementById('balanceChart').getContext('2d');
             balanceChart = new Chart(balanceCtx, {
                 type: 'line',
-                data: {
-                    labels: plantBuffers.timestamps,
-                    datasets: [
-                        {
-                            label: 'Solar Generation (W)',
-                            data: plantBuffers.solarPower,
-                            borderColor: '#00ff88',
-                            backgroundColor: 'rgba(0, 255, 136, 0.2)',
-                            borderWidth: 3,
-                            fill: true,
-                            tension: 0.4,
-                            pointRadius: 0,
-                            pointHoverRadius: 5
-                        },
-                        {
-                            label: 'Total Load (W)',
-                            data: plantBuffers.loadPower,
-                            borderColor: '#ff3860',
-                            backgroundColor: 'rgba(255, 56, 96, 0.2)',
-                            borderWidth: 3,
-                            fill: true,
-                            tension: 0.4,
-                            pointRadius: 0,
-                            pointHoverRadius: 5
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    interaction: {
-                        mode: 'index',
-                        intersect: false
-                    },
-                    plugins: {
-                        legend: {
-                            display: true,
-                            position: 'top',
-                            labels: {
-                                color: '#00ffff',
-                                font: { size: 11, family: 'Rajdhani, sans-serif', weight: '500' },
-                                usePointStyle: true,
-                                padding: 12,
-                                boxWidth: 12,
-                                boxHeight: 12
-                            }
-                        },
-                        tooltip: {
-                            backgroundColor: 'rgba(10, 14, 23, 0.95)',
-                            titleColor: '#00ffff',
-                            bodyColor: '#ffffff',
-                            borderColor: '#00ffff',
-                            borderWidth: 1,
-                            padding: 12,
-                            cornerRadius: 8,
-                            callbacks: {
-                                afterBody: function(context) {
-                                    const index = context[0].dataIndex;
-                                    const gen = plantBuffers.solarPower[index] || 0;
-                                    const load = plantBuffers.loadPower[index] || 0;
-                                    const balance = gen - load;
-                                    const status = balance >= 0 ? 'SURPLUS' : 'DEFICIT';
-                                    const icon = balance >= 0 ? '✅' : '⚠️';
-                                    return `\n${icon} ${status}: ${Math.abs(balance).toFixed(0)} W`;
-                                }
-                            }
-                        }
-                    },
+                data: { labels: plantBuffers.timestamps, datasets: [
+                    { label: 'Solar Generation (W)', data: plantBuffers.solarPower, borderColor: '#00ff88', backgroundColor: 'rgba(0, 255, 136, 0.2)', borderWidth: 3, fill: true, tension: 0.4, pointRadius: 0 },
+                    { label: 'Total Load (W)', data: plantBuffers.loadPower, borderColor: '#ff3860', backgroundColor: 'rgba(255, 56, 96, 0.2)', borderWidth: 3, fill: true, tension: 0.4, pointRadius: 0 }
+                ]},
+                options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
                     scales: {
-                        x: {
-                            display: true,
-                            grid: { 
-                                color: 'rgba(0, 255, 255, 0.08)',
-                                drawBorder: false
-                            },
-                            ticks: { 
-                                color: '#00ffff',
-                                font: { size: 10, family: 'Rajdhani, sans-serif' },
-                                maxRotation: 0,
-                                autoSkipPadding: 15
-                            }
-                        },
-                        y: {
-                            display: true,
-                            title: {
-                                display: true,
-                                text: 'Power (W)',
-                                color: '#00ffff',
-                                font: { size: 11, family: 'Rajdhani, sans-serif', weight: '600' }
-                            },
-                            grid: { 
-                                color: 'rgba(0, 255, 255, 0.08)',
-                                drawBorder: false
-                            },
-                            ticks: { 
-                                color: '#00ffff',
-                                font: { size: 10, family: 'Rajdhani, sans-serif' }
-                            }
-                        }
+                        x: { grid: { color: 'rgba(0, 255, 255, 0.08)' }, ticks: { color: '#00ffff' } },
+                        y: { title: { display: true, text: 'Power (W)', color: '#00ffff' }, grid: { color: 'rgba(0, 255, 255, 0.08)' }, ticks: { color: '#00ffff' } }
                     },
-                    animation: {
-                        duration: 500,
-                        easing: 'easeInOutQuart'
-                    }
+                    animation: { duration: 0 }
                 }
             });
         }
         
-        // ============================================================================
-        // UI UPDATE FUNCTIONS
-        // ============================================================================
-        
+        // --- UI UPDATES ---
         function updateDashboardUI() {
-            /*
-             * FUNCTION: Update all dashboard UI elements
-             * 
-             * UPDATES:
-             * - Top stat cards (Solar Power, Battery SOC, Battery Temp)
-             * - Load Power card (clickable button to Village View)
-             * - Status indicators and timestamps
-             * 
-             * CALLED: Every time new Firebase data arrives
-             */
+            document.getElementById('solarPowerValue').textContent = currentPlantData.solarPower.toFixed(0);
             
-            // Solar Power Card
-            document.getElementById('solarPowerValue').textContent = 
-                currentPlantData.solarPower.toFixed(0);
-            
-            // Battery SOC Card
             const socValue = currentPlantData.batterySOC.toFixed(1);
             document.getElementById('batterySOCValue').textContent = socValue;
             
             const socBar = document.getElementById('socProgressBar');
             socBar.style.width = `${currentPlantData.batterySOC}%`;
             
-            // SOC color coding
-            if (currentPlantData.batterySOC > 80) {
-                socBar.style.background = 'linear-gradient(90deg, #00ff88, #00cc6f)';
-            } else if (currentPlantData.batterySOC > 50) {
-                socBar.style.background = 'linear-gradient(90deg, #ffd700, #ffb700)';
-            } else if (currentPlantData.batterySOC > 20) {
-                socBar.style.background = 'linear-gradient(90deg, #ff9500, #ff7700)';
-            } else {
-                socBar.style.background = 'linear-gradient(90deg, #ff3860, #cc2a4d)';
-            }
+            if (currentPlantData.batterySOC > 80) socBar.style.background = 'linear-gradient(90deg, #00ff88, #00cc6f)';
+            else if (currentPlantData.batterySOC > 50) socBar.style.background = 'linear-gradient(90deg, #ffd700, #ffb700)';
+            else if (currentPlantData.batterySOC > 20) socBar.style.background = 'linear-gradient(90deg, #ff9500, #ff7700)';
+            else socBar.style.background = 'linear-gradient(90deg, #ff3860, #cc2a4d)';
             
-            // Battery Temperature Card
             const tempValue = currentPlantData.batteryTemp.toFixed(1);
-            document.getElementById('batteryTempValue').textContent = tempValue;
-            
             const tempElement = document.getElementById('batteryTempValue');
-            if (currentPlantData.batteryTemp < 45) {
-                tempElement.style.color = '#00ff88';
-            } else if (currentPlantData.batteryTemp < 55) {
-                tempElement.style.color = '#ffd700';
-            } else {
-                tempElement.style.color = '#ff3860';
-                // Haptic feedback on mobile for critical temperature
-                if (navigator.vibrate) {
-                    navigator.vibrate([200, 100, 200]);
-                }
-            }
+            tempElement.textContent = tempValue;
             
-            // Total Load Power (clickable button card)
-            document.getElementById('loadPowerValue').textContent = 
-                currentPlantData.loadPower.toFixed(0);
+            if (currentPlantData.batteryTemp < 45) tempElement.style.color = '#00ff88';
+            else if (currentPlantData.batteryTemp < 55) tempElement.style.color = '#ffd700';
+            else tempElement.style.color = '#ff3860';
             
-            // Update last update timestamp
+            // Total Load is now calculated dynamically from all houses
+            document.getElementById('loadPowerValue').textContent = calculateTotalLoad().toFixed(0);
+            
             if (currentPlantData.timestamp > 0) {
-                const now = Date.now();
-                const diff = Math.floor((now - currentPlantData.timestamp) / 1000);
-                const lastUpdate = document.getElementById('lastUpdate');
-                lastUpdate.textContent = diff < 60 ? `${diff}s ago` : `${Math.floor(diff / 60)}m ago`;
+                const diff = Math.floor((Date.now() - currentPlantData.timestamp) / 1000);
+                document.getElementById('lastUpdate').textContent = diff < 60 ? `${diff}s ago` : `${Math.floor(diff / 60)}m ago`;
             }
         }
         
         function updateCharts() {
-            /*
-             * FUNCTION: Refresh chart visualizations with buffered data
-             * 
-             * PERFORMANCE NOTE:
-             * - Uses Chart.js update() with 'none' mode for optimal performance
-             * - 'none' mode = no animation = instant update
-             * - Better for real-time data streams
-             * 
-             * ALTERNATIVE:
-             * - Use 'active' mode for smooth animations (slower)
-             * - Trade-off: visual polish vs performance
-             */
-            
             if (physicsChart) {
-                physicsChart.data.labels = [...plantBuffers.timestamps];
-                physicsChart.data.datasets[0].data = [...plantBuffers.solarPower];
-                physicsChart.data.datasets[1].data = [...plantBuffers.solarTemp];
                 physicsChart.update('none');
             }
-            
             if (balanceChart) {
-                balanceChart.data.labels = [...plantBuffers.timestamps];
-                balanceChart.data.datasets[0].data = [...plantBuffers.solarPower];
-                balanceChart.data.datasets[1].data = [...plantBuffers.loadPower];
                 balanceChart.update('none');
             }
         }
-        
-        function updateVillageCards() {
-            /*
-             * FUNCTION: Generate/update house cards in Village View
-             * 
-             * DYNAMIC HTML GENERATION:
-             * - Creates 10 cards (one per house)
-             * - Each card shows: House ID, Load (kWh), Voltage, Status
-             * - Status indicator: Green dot (< 50 kWh) or Red dot (>= 50 kWh)
-             * 
-             * ACADEMIC NOTE:
-             * This demonstrates "Dynamic DOM Manipulation" - a core web dev skill
-             * Modern frameworks (React, Vue) abstract this with virtual DOM
-             */
-            
+
+        // CREATES CARDS ONCE (Stops the flickering)
+        function initializeVillageCards() {
             const container = document.getElementById('villageCardsContainer');
-            container.innerHTML = '';  // Clear existing cards
+            container.innerHTML = '';  
             
             for (let id = 101; id <= 110; id++) {
-                const house = houseData[id];
-                const statusColor = house.usage_kwh < 50 ? '#00ff88' : '#ff3860';
-                const statusText = house.usage_kwh < 50 ? 'NORMAL' : 'HIGH';
-                
                 const card = document.createElement('div');
                 card.className = 'village-card';
                 card.innerHTML = `
                     <div class="village-card-header">
                         <div class="village-card-id">House ${id}</div>
-                        <div class="village-card-status" style="color: ${statusColor}">
-                            <span class="status-dot" style="background: ${statusColor}"></span>
-                            ${statusText}
+                        <div class="village-card-status" id="status-color-${id}">
+                            <span class="status-dot" id="status-dot-${id}"></span>
+                            <span id="status-text-${id}">NORMAL</span>
                         </div>
                     </div>
                     <div class="village-card-body">
                         <div class="village-metric">
                             <div class="village-metric-label">Load</div>
                             <div class="village-metric-value">
-                                ${house.usage_kwh.toFixed(1)} <span class="village-metric-unit">kWh</span>
+                                <span id="load-${id}">0.0</span> <span class="village-metric-unit">kWh</span>
                             </div>
                         </div>
                         <div class="village-metric">
                             <div class="village-metric-label">Voltage</div>
                             <div class="village-metric-value">
-                                ${house.grid_voltage.toFixed(1)} <span class="village-metric-unit">V</span>
+                                <span id="volt-${id}">0.0</span> <span class="village-metric-unit">V</span>
                             </div>
                         </div>
                     </div>
                 `;
-                
                 container.appendChild(card);
             }
         }
         
-        // ============================================================================
-        // FIREBASE REAL-TIME LISTENERS
-        // ============================================================================
+        // ONLY UPDATES TEXT VALUES (Fast and smooth)
+        function updateVillageCards() {
+            for (let id = 101; id <= 110; id++) {
+                const house = houseData[id];
+                const isHigh = house.usage_kwh >= 50;
+                const color = isHigh ? '#ff3860' : '#00ff88';
+                const text = isHigh ? 'HIGH' : 'NORMAL';
+                
+                document.getElementById(`load-${id}`).textContent = house.usage_kwh.toFixed(1);
+                document.getElementById(`volt-${id}`).textContent = house.grid_voltage.toFixed(1);
+                document.getElementById(`status-color-${id}`).style.color = color;
+                document.getElementById(`status-dot-${id}`).style.background = color;
+                document.getElementById(`status-text-${id}`).textContent = text;
+            }
+        }
         
+        // --- FIREBASE LISTENERS ---
         function startPlantListener() {
-            /*
-             * FUNCTION: Establish real-time connection to Main Plant data
-             * 
-             * FIREBASE PATH: /microgrid/plant
-             * 
-             * DATA FLOW:
-             * 1. ESP32 Gateway writes data to Firebase
-             * 2. Firebase pushes update via WebSocket
-             * 3. onValue() callback triggers
-             * 4. Data is buffered and UI is updated
-             * 
-             * WEBSOCKET ADVANTAGES:
-             * - Low latency (< 100ms typically)
-             * - Bi-directional communication
-             * - Automatic reconnection on network failures
-             */
-            
             const plantRef = ref(database, '/microgrid/plant');
-            
             onValue(plantRef, (snapshot) => {
                 const data = snapshot.val();
-                
                 if (data) {
-                    console.log('📡 Plant data received:', data);
-                    
-                    // Update current values
                     currentPlantData.solarPower = data.solar_power || 0;
                     currentPlantData.solarTemp = data.solar_temp || 0;
-                    currentPlantData.loadPower = data.load_power || 0;
                     currentPlantData.batterySOC = data.battery_soc || 0;
                     currentPlantData.batteryTemp = data.battery_temp || 0;
                     currentPlantData.timestamp = data.timestamp || Date.now();
                     
-                    // Add to buffers (client-side time-series storage)
                     const timeLabel = formatTimestamp(currentPlantData.timestamp);
                     addToBuffer(plantBuffers.timestamps, timeLabel);
                     addToBuffer(plantBuffers.solarPower, currentPlantData.solarPower);
                     addToBuffer(plantBuffers.solarTemp, currentPlantData.solarTemp);
-                    addToBuffer(plantBuffers.loadPower, currentPlantData.loadPower);
+                    addToBuffer(plantBuffers.loadPower, calculateTotalLoad()); // Uses actual house totals
                     addToBuffer(plantBuffers.batterySOC, currentPlantData.batterySOC);
                     addToBuffer(plantBuffers.batteryTemp, currentPlantData.batteryTemp);
                     
-                    // Update UI
                     updateDashboardUI();
                     updateCharts();
                     
-                    // Visual feedback (status indicator pulse)
                     const statusDot = document.getElementById('statusIndicator');
                     statusDot.classList.add('pulse-animation');
                     setTimeout(() => statusDot.classList.remove('pulse-animation'), 1000);
                 }
-            }, (error) => {
-                console.error('❌ Firebase plant listener error:', error);
-                document.getElementById('connectionStatus').textContent = 'ERROR';
-                document.getElementById('connectionStatus').style.color = '#ff3860';
             });
         }
         
         function startHouseListeners() {
-            /*
-             * FUNCTION: Establish real-time connections to all house data
-             * 
-             * FIREBASE PATHS: /microgrid/house_101 to /microgrid/house_110
-             * 
-             * SCALABILITY NOTE:
-             * - 10 separate Firebase listeners (one per house)
-             * - Each operates independently
-             * - Firebase handles connection multiplexing efficiently
-             * 
-             * ALTERNATIVE ARCHITECTURE:
-             * - Could use a single listener on /microgrid/house_*
-             * - Would require Firebase rules to allow wildcard queries
-             * - Current approach is simpler for fixed number of houses
-             */
-            
             for (let id = 101; id <= 110; id++) {
                 const houseRef = ref(database, `/microgrid/house_${id}`);
-                
                 onValue(houseRef, (snapshot) => {
                     const data = snapshot.val();
-                    
                     if (data) {
-                        console.log(`🏠 House ${id} data received:`, data);
-                        
-                        // Update house data
                         houseData[id].usage_kwh = data.usage_kwh || 0;
                         houseData[id].grid_voltage = data.grid_voltage || 0;
                         houseData[id].timestamp = data.timestamp || Date.now();
-                        houseData[id].status = data.usage_kwh < 50 ? 'normal' : 'high';
                         
-                        // If Village View is active, update it
-                        const villageView = document.getElementById('villageView');
-                        if (villageView.style.display === 'block') {
+                        // Instantly update the Total Load on the front page
+                        document.getElementById('loadPowerValue').textContent = calculateTotalLoad().toFixed(0);
+                        
+                        if (document.getElementById('villageView').style.display === 'block') {
                             updateVillageCards();
                         }
                     }
@@ -762,659 +262,137 @@
             }
         }
         
-        // ============================================================================
-        // APP INITIALIZATION
-        // ============================================================================
-        
         window.addEventListener('DOMContentLoaded', () => {
-            console.log('🚀 Microgrid Monitor initializing...');
-            
-            // Show dashboard view by default
+            initializeVillageCards(); // Create DOM elements once
             showDashboardView();
-            
-            // Initialize charts
             initializeCharts();
-            
-            // Start Firebase listeners
             startPlantListener();
             startHouseListeners();
-            
-            // Initial UI update
             updateDashboardUI();
             
-            // Set connection status
             document.getElementById('connectionStatus').textContent = 'LIVE';
             document.getElementById('connectionStatus').style.color = '#00ff88';
-            
-            console.log('✅ Dashboard ready - Listening for real-time data');
         });
-        
-        // ============================================================================
-        // MOBILE APP OPTIMIZATIONS
-        // ============================================================================
-        
-        // Prevent pull-to-refresh gesture on mobile
-        document.addEventListener('touchmove', function(e) {
-            if (e.touches.length > 1) {
-                e.preventDefault();
-            }
-        }, { passive: false });
-        
-        // Prevent zoom on double-tap
-        let lastTouchEnd = 0;
-        document.addEventListener('touchend', function(e) {
-            const now = Date.now();
-            if (now - lastTouchEnd <= 300) {
-                e.preventDefault();
-            }
-            lastTouchEnd = now;
-        }, false);
         
     </script>
     
     <style>
-        /* ============================================================================
-           GOOGLE FONTS - CYBERPUNK TYPOGRAPHY
-           ============================================================================ */
         @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=Orbitron:wght@400;500;700;900&display=swap');
         
-        /* ============================================================================
-           GLOBAL RESET & BASE STYLES
-           ============================================================================ */
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-            -webkit-tap-highlight-color: transparent;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
         
         :root {
-            /* Cyberpunk Color Palette */
-            --bg-primary: #0a0e17;
-            --bg-secondary: #141922;
-            --bg-card: rgba(20, 25, 34, 0.85);
-            --accent-cyan: #00ffff;
-            --accent-green: #00ff88;
-            --accent-red: #ff3860;
-            --accent-orange: #ff6b35;
-            --accent-yellow: #ffd700;
-            --text-primary: #ffffff;
-            --text-secondary: #8892b0;
-            --border-glow: rgba(0, 255, 255, 0.3);
-            
-            /* Glassmorphism */
-            --glass-bg: rgba(20, 25, 34, 0.7);
-            --glass-border: rgba(0, 255, 255, 0.2);
-            --glass-shadow: 0 8px 32px 0 rgba(0, 255, 255, 0.15);
+            --bg-primary: #0a0e17; --bg-secondary: #141922; --bg-card: rgba(20, 25, 34, 0.85);
+            --accent-cyan: #00ffff; --accent-green: #00ff88; --accent-red: #ff3860;
+            --accent-orange: #ff6b35; --accent-yellow: #ffd700; --text-primary: #ffffff;
+            --text-secondary: #8892b0; --glass-bg: rgba(20, 25, 34, 0.7);
+            --glass-border: rgba(0, 255, 255, 0.2); --glass-shadow: 0 8px 32px 0 rgba(0, 255, 255, 0.15);
         }
         
         body {
-            font-family: 'Rajdhani', sans-serif;
-            background: linear-gradient(135deg, #0a0e17 0%, #1a1f2e 100%);
-            color: var(--text-primary);
-            min-height: 100vh;
-            overflow-x: hidden;
-            -webkit-font-smoothing: antialiased;
-            position: relative;
+            font-family: 'Rajdhani', sans-serif; background: linear-gradient(135deg, #0a0e17 0%, #1a1f2e 100%);
+            color: var(--text-primary); min-height: 100vh; overflow-x: hidden; position: relative;
         }
         
-        /* Animated Background Grid */
         body::before {
-            content: '';
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-image: 
-                linear-gradient(rgba(0, 255, 255, 0.03) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(0, 255, 255, 0.03) 1px, transparent 1px);
-            background-size: 50px 50px;
-            pointer-events: none;
-            z-index: 0;
-            animation: gridMove 20s linear infinite;
+            content: ''; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background-image: linear-gradient(rgba(0, 255, 255, 0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(0, 255, 255, 0.03) 1px, transparent 1px);
+            background-size: 50px 50px; pointer-events: none; z-index: 0; animation: gridMove 20s linear infinite;
         }
         
-        @keyframes gridMove {
-            0% { transform: translate(0, 0); }
-            100% { transform: translate(50px, 50px); }
-        }
+        @keyframes gridMove { 0% { transform: translate(0, 0); } 100% { transform: translate(50px, 50px); } }
         
-        /* ============================================================================
-           CONTAINER & LAYOUT
-           ============================================================================ */
-        .app-container {
-            position: relative;
-            z-index: 1;
-            max-width: 480px;
-            margin: 0 auto;
-            padding: 20px 16px 40px;
-        }
+        .app-container { position: relative; z-index: 1; max-width: 480px; margin: 0 auto; padding: 20px 16px 40px; }
+        .header { text-align: center; margin-bottom: 24px; animation: fadeInDown 0.6s ease-out; }
+        .logo { display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 8px; }
+        .logo-icon { font-size: 32px; animation: rotate 4s linear infinite; }
         
-        /* ============================================================================
-           HEADER
-           ============================================================================ */
-        .header {
-            text-align: center;
-            margin-bottom: 24px;
-            animation: fadeInDown 0.6s ease-out;
-        }
+        @keyframes rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         
-        .logo {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 12px;
-            margin-bottom: 8px;
-        }
+        h1 { font-family: 'Orbitron', sans-serif; font-size: 24px; font-weight: 700; background: linear-gradient(90deg, var(--accent-cyan), var(--accent-green)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; letter-spacing: 2px; text-transform: uppercase; }
+        .status-bar { display: flex; justify-content: center; align-items: center; gap: 16px; margin-top: 12px; font-size: 12px; color: var(--text-secondary); }
+        .status-item { display: flex; align-items: center; gap: 6px; }
+        .status-indicator { width: 8px; height: 8px; background: var(--accent-green); border-radius: 50%; box-shadow: 0 0 10px var(--accent-green); }
         
-        .logo-icon {
-            font-size: 32px;
-            animation: rotate 4s linear infinite;
-        }
+        .pulse-animation { animation: pulse 1s ease-in-out; }
+        @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.3); } }
         
-        @keyframes rotate {
-            from { transform: rotate(0deg); }
-            to { transform: rotate(360deg); }
-        }
+        .card { background: var(--glass-bg); backdrop-filter: blur(12px); border: 1px solid var(--glass-border); border-radius: 16px; padding: 20px; margin-bottom: 20px; box-shadow: var(--glass-shadow); animation: fadeInUp 0.6s ease-out; transition: transform 0.3s ease; }
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+        .card-title { font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--accent-cyan); }
         
-        h1 {
-            font-family: 'Orbitron', sans-serif;
-            font-size: 24px;
-            font-weight: 700;
-            background: linear-gradient(90deg, var(--accent-cyan), var(--accent-green));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            letter-spacing: 2px;
-            text-transform: uppercase;
-        }
+        .stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 20px; }
+        .stat-card { background: var(--glass-bg); backdrop-filter: blur(12px); border: 1px solid var(--glass-border); border-radius: 12px; padding: 16px; text-align: center; animation: fadeInUp 0.6s ease-out; }
+        .stat-label { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+        .stat-value { font-family: 'Orbitron', sans-serif; font-size: 28px; font-weight: 700; color: var(--accent-green); line-height: 1; }
+        .stat-unit { font-size: 14px; color: var(--text-secondary); margin-left: 4px; }
         
-        .status-bar {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 16px;
-            margin-top: 12px;
-            font-size: 12px;
-            color: var(--text-secondary);
-        }
+        .load-card { grid-column: span 2; cursor: pointer; position: relative; }
+        .load-card::after { content: '→'; position: absolute; right: 20px; top: 50%; transform: translateY(-50%); font-size: 24px; color: var(--accent-cyan); opacity: 0.7; }
+        .load-card:hover::after { opacity: 1; animation: slideRight 0.6s ease-in-out infinite; }
         
-        .status-item {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
+        @keyframes slideRight { 0%, 100% { transform: translateY(-50%) translateX(0); } 50% { transform: translateY(-50%) translateX(5px); } }
         
-        .status-indicator {
-            width: 8px;
-            height: 8px;
-            background: var(--accent-green);
-            border-radius: 50%;
-            box-shadow: 0 0 10px var(--accent-green);
-        }
+        .soc-progress-container { height: 8px; background: rgba(0, 255, 255, 0.1); border-radius: 4px; overflow: hidden; margin-top: 8px; border: 1px solid rgba(0, 255, 255, 0.2); }
+        .soc-progress-bar { height: 100%; background: linear-gradient(90deg, var(--accent-green), #00cc6f); border-radius: 4px; transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1); }
         
-        .pulse-animation {
-            animation: pulse 1s ease-in-out;
-        }
+        .chart-card { margin-bottom: 20px; }
+        .chart-container { position: relative; height: 260px; margin-top: 16px; }
         
-        @keyframes pulse {
-            0%, 100% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.5; transform: scale(1.3); }
-        }
+        .village-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; animation: fadeInDown 0.6s ease-out; }
+        .back-button { background: var(--glass-bg); border: 1px solid var(--glass-border); color: var(--accent-cyan); padding: 10px 20px; border-radius: 8px; font-family: 'Rajdhani', sans-serif; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.3s ease; text-transform: uppercase; letter-spacing: 1px; }
+        .back-button:active { transform: scale(0.95); background: rgba(0, 255, 255, 0.1); }
+        .village-title { font-family: 'Orbitron', sans-serif; font-size: 18px; font-weight: 700; color: var(--accent-cyan); text-transform: uppercase; letter-spacing: 1.5px; }
         
-        /* ============================================================================
-           CARD COMPONENTS
-           ============================================================================ */
-        .card {
-            background: var(--glass-bg);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border: 1px solid var(--glass-border);
-            border-radius: 16px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: var(--glass-shadow);
-            animation: fadeInUp 0.6s ease-out;
-            position: relative;
-            overflow: hidden;
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-        }
+        .village-cards-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+        .village-card { background: var(--glass-bg); backdrop-filter: blur(12px); border: 1px solid var(--glass-border); border-radius: 12px; padding: 14px; animation: fadeInUp 0.6s ease-out; }
+        .village-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid rgba(0, 255, 255, 0.1); }
+        .village-card-id { font-size: 13px; font-weight: 600; color: var(--accent-cyan); text-transform: uppercase; letter-spacing: 0.5px; }
+        .village-card-status { display: flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 600; transition: color 0.3s; }
+        .status-dot { width: 6px; height: 6px; border-radius: 50%; transition: background 0.3s; }
         
-        .card::before {
-            content: '';
-            position: absolute;
-            top: -2px;
-            left: -2px;
-            right: -2px;
-            bottom: -2px;
-            background: linear-gradient(45deg, var(--accent-cyan), var(--accent-green));
-            border-radius: 16px;
-            opacity: 0;
-            transition: opacity 0.3s ease;
-            z-index: -1;
-        }
+        .village-card-body { display: flex; flex-direction: column; gap: 10px; }
+        .village-metric { display: flex; justify-content: space-between; align-items: center; }
+        .village-metric-label { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.3px; }
+        .village-metric-value { font-family: 'Orbitron', sans-serif; font-size: 16px; font-weight: 700; color: var(--accent-green); transition: color 0.3s; }
+        .village-metric-unit { font-size: 11px; color: var(--text-secondary); font-weight: 400; }
         
-        .card:active {
-            transform: scale(0.98);
-        }
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes fadeInDown { from { opacity: 0; transform: translateY(-20px); } to { opacity: 1; transform: translateY(0); } }
         
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 16px;
-        }
-        
-        .card-title {
-            font-size: 14px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            color: var(--accent-cyan);
-        }
-        
-        /* ============================================================================
-           STAT CARDS
-           ============================================================================ */
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 12px;
-            margin-bottom: 20px;
-        }
-        
-        .stat-card {
-            background: var(--glass-bg);
-            backdrop-filter: blur(12px);
-            border: 1px solid var(--glass-border);
-            border-radius: 12px;
-            padding: 16px;
-            text-align: center;
-            animation: fadeInUp 0.6s ease-out;
-            transition: transform 0.2s ease;
-        }
-        
-        .stat-card:active {
-            transform: scale(0.95);
-        }
-        
-        .stat-label {
-            font-size: 11px;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 8px;
-        }
-        
-        .stat-value {
-            font-family: 'Orbitron', sans-serif;
-            font-size: 28px;
-            font-weight: 700;
-            color: var(--accent-green);
-            line-height: 1;
-        }
-        
-        .stat-unit {
-            font-size: 14px;
-            color: var(--text-secondary);
-            margin-left: 4px;
-        }
-        
-        /* Load Power Button Card */
-        .load-card {
-            grid-column: span 2;
-            cursor: pointer;
-            position: relative;
-        }
-        
-        .load-card::after {
-            content: '→';
-            position: absolute;
-            right: 20px;
-            top: 50%;
-            transform: translateY(-50%);
-            font-size: 24px;
-            color: var(--accent-cyan);
-            opacity: 0.7;
-        }
-        
-        .load-card:hover::after {
-            opacity: 1;
-            animation: slideRight 0.6s ease-in-out infinite;
-        }
-        
-        @keyframes slideRight {
-            0%, 100% { transform: translateY(-50%) translateX(0); }
-            50% { transform: translateY(-50%) translateX(5px); }
-        }
-        
-        /* Battery SOC Progress Bar */
-        .soc-progress-container {
-            height: 8px;
-            background: rgba(0, 255, 255, 0.1);
-            border-radius: 4px;
-            overflow: hidden;
-            margin-top: 8px;
-            border: 1px solid rgba(0, 255, 255, 0.2);
-        }
-        
-        .soc-progress-bar {
-            height: 100%;
-            background: linear-gradient(90deg, var(--accent-green), #00cc6f);
-            border-radius: 4px;
-            transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
-        }
-        
-        /* ============================================================================
-           CHART CONTAINERS
-           ============================================================================ */
-        .chart-card {
-            margin-bottom: 20px;
-        }
-        
-        .chart-container {
-            position: relative;
-            height: 260px;
-            margin-top: 16px;
-        }
-        
-        /* ============================================================================
-           VILLAGE VIEW (VIEW 2)
-           ============================================================================ */
-        .village-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 24px;
-            animation: fadeInDown 0.6s ease-out;
-        }
-        
-        .back-button {
-            background: var(--glass-bg);
-            border: 1px solid var(--glass-border);
-            color: var(--accent-cyan);
-            padding: 10px 20px;
-            border-radius: 8px;
-            font-family: 'Rajdhani', sans-serif;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        
-        .back-button:active {
-            transform: scale(0.95);
-            background: rgba(0, 255, 255, 0.1);
-        }
-        
-        .village-title {
-            font-family: 'Orbitron', sans-serif;
-            font-size: 18px;
-            font-weight: 700;
-            color: var(--accent-cyan);
-            text-transform: uppercase;
-            letter-spacing: 1.5px;
-        }
-        
-        .village-cards-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 12px;
-        }
-        
-        .village-card {
-            background: var(--glass-bg);
-            backdrop-filter: blur(12px);
-            border: 1px solid var(--glass-border);
-            border-radius: 12px;
-            padding: 14px;
-            animation: fadeInUp 0.6s ease-out;
-        }
-        
-        .village-card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 12px;
-            padding-bottom: 8px;
-            border-bottom: 1px solid rgba(0, 255, 255, 0.1);
-        }
-        
-        .village-card-id {
-            font-size: 13px;
-            font-weight: 600;
-            color: var(--accent-cyan);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        
-        .village-card-status {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-            font-size: 10px;
-            font-weight: 600;
-        }
-        
-        .status-dot {
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
-            box-shadow: 0 0 8px currentColor;
-        }
-        
-        .village-card-body {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-        
-        .village-metric {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        
-        .village-metric-label {
-            font-size: 10px;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 0.3px;
-        }
-        
-        .village-metric-value {
-            font-family: 'Orbitron', sans-serif;
-            font-size: 16px;
-            font-weight: 700;
-            color: var(--accent-green);
-        }
-        
-        .village-metric-unit {
-            font-size: 11px;
-            color: var(--text-secondary);
-            font-weight: 400;
-        }
-        
-        /* ============================================================================
-           ANIMATIONS
-           ============================================================================ */
-        @keyframes fadeInUp {
-            from {
-                opacity: 0;
-                transform: translateY(20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-        
-        @keyframes fadeInDown {
-            from {
-                opacity: 0;
-                transform: translateY(-20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-        
-        /* ============================================================================
-           MOBILE OPTIMIZATIONS
-           ============================================================================ */
         @media (max-width: 360px) {
-            .app-container {
-                padding: 16px 12px 40px;
-            }
-            
-            h1 {
-                font-size: 20px;
-            }
-            
-            .stat-value {
-                font-size: 24px;
-            }
-            
-            .chart-container {
-                height: 220px;
-            }
-            
-            .village-cards-grid {
-                grid-template-columns: 1fr;
-            }
-        }
-        
-        /* ============================================================================
-           SCROLLBAR CUSTOMIZATION
-           ============================================================================ */
-        ::-webkit-scrollbar {
-            width: 6px;
-        }
-        
-        ::-webkit-scrollbar-track {
-            background: var(--bg-primary);
-        }
-        
-        ::-webkit-scrollbar-thumb {
-            background: var(--accent-cyan);
-            border-radius: 3px;
-        }
-        
-        ::-webkit-scrollbar-thumb:hover {
-            background: var(--accent-green);
+            .app-container { padding: 16px 12px 40px; }
+            h1 { font-size: 20px; }
+            .stat-value { font-size: 24px; }
+            .chart-container { height: 220px; }
+            .village-cards-grid { grid-template-columns: 1fr; }
         }
     </style>
 </head>
 <body>
-    <!-- ============================================================================
-         VIEW 1: MAIN DASHBOARD (DEFAULT)
-         ============================================================================ -->
     <div id="dashboardView" class="app-container">
-        
-        <!-- HEADER -->
         <header class="header">
-            <div class="logo">
-                <div class="logo-icon">⚡</div>
-                <h1>Microgrid Monitor</h1>
-            </div>
+            <div class="logo"><div class="logo-icon">⚡</div><h1>Microgrid Monitor</h1></div>
             <div class="status-bar">
-                <div class="status-item">
-                    <div id="statusIndicator" class="status-indicator"></div>
-                    <span id="connectionStatus">CONNECTING</span>
-                </div>
-                <div class="status-item">
-                    <span>📡</span>
-                    <span id="lastUpdate">—</span>
-                </div>
+                <div class="status-item"><div id="statusIndicator" class="status-indicator"></div><span id="connectionStatus">CONNECTING</span></div>
+                <div class="status-item"><span>📡</span><span id="lastUpdate">—</span></div>
             </div>
         </header>
         
-        <!-- REAL-TIME STAT CARDS -->
         <div class="stats-grid">
-            <!-- Solar Power -->
-            <div class="stat-card">
-                <div class="stat-label">☀️ Solar</div>
-                <div class="stat-value">
-                    <span id="solarPowerValue">0</span>
-                    <span class="stat-unit">W</span>
-                </div>
-            </div>
-            
-            <!-- Battery SOC -->
-            <div class="stat-card">
-                <div class="stat-label">🔋 SOC</div>
-                <div class="stat-value">
-                    <span id="batterySOCValue">0</span>
-                    <span class="stat-unit">%</span>
-                </div>
-                <div class="soc-progress-container">
-                    <div id="socProgressBar" class="soc-progress-bar" style="width: 0%"></div>
-                </div>
-            </div>
-            
-            <!-- Battery Temperature -->
-            <div class="stat-card">
-                <div class="stat-label">🌡️ Battery</div>
-                <div class="stat-value">
-                    <span id="batteryTempValue">0</span>
-                    <span class="stat-unit">°C</span>
-                </div>
-            </div>
-            
-            <!-- Total Load (Clickable Button) -->
-            <div class="stat-card load-card" onclick="showVillageView()">
-                <div class="stat-label">⚡ Total Load</div>
-                <div class="stat-value">
-                    <span id="loadPowerValue">0</span>
-                    <span class="stat-unit">W</span>
-                </div>
-            </div>
+            <div class="stat-card"><div class="stat-label">☀️ Solar</div><div class="stat-value"><span id="solarPowerValue">0</span><span class="stat-unit">W</span></div></div>
+            <div class="stat-card"><div class="stat-label">🔋 SOC</div><div class="stat-value"><span id="batterySOCValue">0</span><span class="stat-unit">%</span></div><div class="soc-progress-container"><div id="socProgressBar" class="soc-progress-bar" style="width: 0%"></div></div></div>
+            <div class="stat-card"><div class="stat-label">🌡️ Battery</div><div class="stat-value"><span id="batteryTempValue">0</span><span class="stat-unit">°C</span></div></div>
+            <div class="stat-card load-card" onclick="showVillageView()"><div class="stat-label">⚡ Total Load</div><div class="stat-value"><span id="loadPowerValue">0</span><span class="stat-unit">W</span></div></div>
         </div>
         
-        <!-- PHYSICS CORRELATION CHART -->
-        <div class="card chart-card">
-            <div class="card-header">
-                <div class="card-title">🔬 Physics Correlation</div>
-            </div>
-            <div class="chart-container">
-                <canvas id="physicsChart"></canvas>
-            </div>
-        </div>
-        
-        <!-- GRID BALANCE CHART -->
-        <div class="card chart-card">
-            <div class="card-header">
-                <div class="card-title">⚖️ Grid Balance</div>
-            </div>
-            <div class="chart-container">
-                <canvas id="balanceChart"></canvas>
-            </div>
-        </div>
-        
+        <div class="card chart-card"><div class="card-header"><div class="card-title">🔬 Physics Correlation</div></div><div class="chart-container"><canvas id="physicsChart"></canvas></div></div>
+        <div class="card chart-card"><div class="card-header"><div class="card-title">⚖️ Grid Balance</div></div><div class="chart-container"><canvas id="balanceChart"></canvas></div></div>
     </div>
     
-    <!-- ============================================================================
-         VIEW 2: VILLAGE LOAD DETAILS (HIDDEN BY DEFAULT)
-         ============================================================================ -->
     <div id="villageView" class="app-container" style="display: none;">
-        
-        <!-- VILLAGE HEADER -->
-        <div class="village-header">
-            <button class="back-button" onclick="showDashboardView()">
-                ← Back
-            </button>
-            <div class="village-title">Village Status</div>
-        </div>
-        
-        <!-- HOUSE CARDS GRID -->
-        <div id="villageCardsContainer" class="village-cards-grid">
-            <!-- Cards will be dynamically generated by JavaScript -->
-        </div>
-        
+        <div class="village-header"><button class="back-button" onclick="showDashboardView()">← Back</button><div class="village-title">Village Status</div></div>
+        <div id="villageCardsContainer" class="village-cards-grid"></div>
     </div>
 </body>
 </html>
