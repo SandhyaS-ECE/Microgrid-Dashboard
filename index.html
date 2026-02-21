@@ -39,6 +39,7 @@
         const currentPlantData = {
             solarPower: 0,
             solarTemp: 0,
+            loadPower: 0,
             batterySOC: 0,
             batteryTemp: 0,
             timestamp: 0
@@ -46,10 +47,9 @@
         
         const houseData = {};
         for (let id = 101; id <= 110; id++) {
-            houseData[id] = { usage_kwh: 0, grid_voltage: 0, timestamp: 0 };
+            houseData[id] = { usage_kwh: 0, timestamp: 0 };
         }
         
-        // --- VIEW MANAGEMENT ---
         window.showDashboardView = () => {
             document.getElementById('dashboardView').style.display = 'block';
             document.getElementById('villageView').style.display = 'none';
@@ -61,7 +61,6 @@
             updateVillageCards(); 
         };
         
-        // --- UTILS ---
         function addToBuffer(buffer, value) {
             buffer.push(value);
             if (buffer.length > BUFFER_SIZE) buffer.shift();  
@@ -72,15 +71,6 @@
             return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
         }
         
-        function calculateTotalLoad() {
-            let total = 0;
-            for (let id = 101; id <= 110; id++) {
-                total += houseData[id].usage_kwh;
-            }
-            return total;
-        }
-        
-        // --- CHARTS ---
         let physicsChart = null;
         let balanceChart = null;
         
@@ -98,7 +88,7 @@
                         'y-power': { type: 'linear', position: 'left', title: { display: true, text: 'Power (W)', color: '#00ff88' }, grid: { color: 'rgba(0, 255, 136, 0.08)' }, ticks: { color: '#00ff88' } },
                         'y-temp': { type: 'linear', position: 'right', title: { display: true, text: 'Temp (°C)', color: '#ff6b35' }, grid: { drawOnChartArea: false }, ticks: { color: '#ff6b35' } }
                     },
-                    animation: { duration: 0 } // Disabled animation for real-time speed
+                    animation: { duration: 0 } 
                 }
             });
             
@@ -119,12 +109,9 @@
             });
         }
         
-        // --- UI UPDATES ---
         function updateDashboardUI() {
             document.getElementById('solarPowerValue').textContent = currentPlantData.solarPower.toFixed(0);
-            
-            const socValue = currentPlantData.batterySOC.toFixed(1);
-            document.getElementById('batterySOCValue').textContent = socValue;
+            document.getElementById('batterySOCValue').textContent = currentPlantData.batterySOC.toFixed(1);
             
             const socBar = document.getElementById('socProgressBar');
             socBar.style.width = `${currentPlantData.batterySOC}%`;
@@ -134,16 +121,14 @@
             else if (currentPlantData.batterySOC > 20) socBar.style.background = 'linear-gradient(90deg, #ff9500, #ff7700)';
             else socBar.style.background = 'linear-gradient(90deg, #ff3860, #cc2a4d)';
             
-            const tempValue = currentPlantData.batteryTemp.toFixed(1);
             const tempElement = document.getElementById('batteryTempValue');
-            tempElement.textContent = tempValue;
-            
+            tempElement.textContent = currentPlantData.batteryTemp.toFixed(1);
             if (currentPlantData.batteryTemp < 45) tempElement.style.color = '#00ff88';
             else if (currentPlantData.batteryTemp < 55) tempElement.style.color = '#ffd700';
             else tempElement.style.color = '#ff3860';
             
-            // Total Load is now calculated dynamically from all houses
-            document.getElementById('loadPowerValue').textContent = calculateTotalLoad().toFixed(0);
+            // FIX: Uses actual live Watts sent from the Main Plant
+            document.getElementById('loadPowerValue').textContent = currentPlantData.loadPower.toFixed(0);
             
             if (currentPlantData.timestamp > 0) {
                 const diff = Math.floor((Date.now() - currentPlantData.timestamp) / 1000);
@@ -152,15 +137,10 @@
         }
         
         function updateCharts() {
-            if (physicsChart) {
-                physicsChart.update('none');
-            }
-            if (balanceChart) {
-                balanceChart.update('none');
-            }
+            if (physicsChart) physicsChart.update('none');
+            if (balanceChart) balanceChart.update('none');
         }
 
-        // CREATES CARDS ONCE (Stops the flickering)
         function initializeVillageCards() {
             const container = document.getElementById('villageCardsContainer');
             container.innerHTML = '';  
@@ -168,6 +148,7 @@
             for (let id = 101; id <= 110; id++) {
                 const card = document.createElement('div');
                 card.className = 'village-card';
+                // FIX: Removed Voltage from the HTML layout
                 card.innerHTML = `
                     <div class="village-card-header">
                         <div class="village-card-id">House ${id}</div>
@@ -178,15 +159,9 @@
                     </div>
                     <div class="village-card-body">
                         <div class="village-metric">
-                            <div class="village-metric-label">Load</div>
+                            <div class="village-metric-label">Energy Billed</div>
                             <div class="village-metric-value">
                                 <span id="load-${id}">0.0</span> <span class="village-metric-unit">kWh</span>
-                            </div>
-                        </div>
-                        <div class="village-metric">
-                            <div class="village-metric-label">Voltage</div>
-                            <div class="village-metric-value">
-                                <span id="volt-${id}">0.0</span> <span class="village-metric-unit">V</span>
                             </div>
                         </div>
                     </div>
@@ -195,23 +170,20 @@
             }
         }
         
-        // ONLY UPDATES TEXT VALUES (Fast and smooth)
         function updateVillageCards() {
             for (let id = 101; id <= 110; id++) {
                 const house = houseData[id];
                 const isHigh = house.usage_kwh >= 50;
                 const color = isHigh ? '#ff3860' : '#00ff88';
-                const text = isHigh ? 'HIGH' : 'NORMAL';
+                const text = isHigh ? 'HIGH TARIFF' : 'NORMAL';
                 
                 document.getElementById(`load-${id}`).textContent = house.usage_kwh.toFixed(1);
-                document.getElementById(`volt-${id}`).textContent = house.grid_voltage.toFixed(1);
                 document.getElementById(`status-color-${id}`).style.color = color;
                 document.getElementById(`status-dot-${id}`).style.background = color;
                 document.getElementById(`status-text-${id}`).textContent = text;
             }
         }
         
-        // --- FIREBASE LISTENERS ---
         function startPlantListener() {
             const plantRef = ref(database, '/microgrid/plant');
             onValue(plantRef, (snapshot) => {
@@ -219,6 +191,7 @@
                 if (data) {
                     currentPlantData.solarPower = data.solar_power || 0;
                     currentPlantData.solarTemp = data.solar_temp || 0;
+                    currentPlantData.loadPower = data.load_power || 0;
                     currentPlantData.batterySOC = data.battery_soc || 0;
                     currentPlantData.batteryTemp = data.battery_temp || 0;
                     currentPlantData.timestamp = data.timestamp || Date.now();
@@ -227,7 +200,7 @@
                     addToBuffer(plantBuffers.timestamps, timeLabel);
                     addToBuffer(plantBuffers.solarPower, currentPlantData.solarPower);
                     addToBuffer(plantBuffers.solarTemp, currentPlantData.solarTemp);
-                    addToBuffer(plantBuffers.loadPower, calculateTotalLoad()); // Uses actual house totals
+                    addToBuffer(plantBuffers.loadPower, currentPlantData.loadPower);
                     addToBuffer(plantBuffers.batterySOC, currentPlantData.batterySOC);
                     addToBuffer(plantBuffers.batteryTemp, currentPlantData.batteryTemp);
                     
@@ -248,11 +221,7 @@
                     const data = snapshot.val();
                     if (data) {
                         houseData[id].usage_kwh = data.usage_kwh || 0;
-                        houseData[id].grid_voltage = data.grid_voltage || 0;
                         houseData[id].timestamp = data.timestamp || Date.now();
-                        
-                        // Instantly update the Total Load on the front page
-                        document.getElementById('loadPowerValue').textContent = calculateTotalLoad().toFixed(0);
                         
                         if (document.getElementById('villageView').style.display === 'block') {
                             updateVillageCards();
@@ -263,7 +232,7 @@
         }
         
         window.addEventListener('DOMContentLoaded', () => {
-            initializeVillageCards(); // Create DOM elements once
+            initializeVillageCards(); 
             showDashboardView();
             initializeCharts();
             startPlantListener();
@@ -289,31 +258,20 @@
             --glass-border: rgba(0, 255, 255, 0.2); --glass-shadow: 0 8px 32px 0 rgba(0, 255, 255, 0.15);
         }
         
-        body {
-            font-family: 'Rajdhani', sans-serif; background: linear-gradient(135deg, #0a0e17 0%, #1a1f2e 100%);
-            color: var(--text-primary); min-height: 100vh; overflow-x: hidden; position: relative;
-        }
-        
-        body::before {
-            content: ''; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background-image: linear-gradient(rgba(0, 255, 255, 0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(0, 255, 255, 0.03) 1px, transparent 1px);
-            background-size: 50px 50px; pointer-events: none; z-index: 0; animation: gridMove 20s linear infinite;
-        }
-        
+        body { font-family: 'Rajdhani', sans-serif; background: linear-gradient(135deg, #0a0e17 0%, #1a1f2e 100%); color: var(--text-primary); min-height: 100vh; overflow-x: hidden; position: relative; }
+        body::before { content: ''; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-image: linear-gradient(rgba(0, 255, 255, 0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(0, 255, 255, 0.03) 1px, transparent 1px); background-size: 50px 50px; pointer-events: none; z-index: 0; animation: gridMove 20s linear infinite; }
         @keyframes gridMove { 0% { transform: translate(0, 0); } 100% { transform: translate(50px, 50px); } }
         
         .app-container { position: relative; z-index: 1; max-width: 480px; margin: 0 auto; padding: 20px 16px 40px; }
         .header { text-align: center; margin-bottom: 24px; animation: fadeInDown 0.6s ease-out; }
         .logo { display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 8px; }
         .logo-icon { font-size: 32px; animation: rotate 4s linear infinite; }
-        
         @keyframes rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         
         h1 { font-family: 'Orbitron', sans-serif; font-size: 24px; font-weight: 700; background: linear-gradient(90deg, var(--accent-cyan), var(--accent-green)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; letter-spacing: 2px; text-transform: uppercase; }
         .status-bar { display: flex; justify-content: center; align-items: center; gap: 16px; margin-top: 12px; font-size: 12px; color: var(--text-secondary); }
         .status-item { display: flex; align-items: center; gap: 6px; }
         .status-indicator { width: 8px; height: 8px; background: var(--accent-green); border-radius: 50%; box-shadow: 0 0 10px var(--accent-green); }
-        
         .pulse-animation { animation: pulse 1s ease-in-out; }
         @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.3); } }
         
@@ -330,7 +288,6 @@
         .load-card { grid-column: span 2; cursor: pointer; position: relative; }
         .load-card::after { content: '→'; position: absolute; right: 20px; top: 50%; transform: translateY(-50%); font-size: 24px; color: var(--accent-cyan); opacity: 0.7; }
         .load-card:hover::after { opacity: 1; animation: slideRight 0.6s ease-in-out infinite; }
-        
         @keyframes slideRight { 0%, 100% { transform: translateY(-50%) translateX(0); } 50% { transform: translateY(-50%) translateX(5px); } }
         
         .soc-progress-container { height: 8px; background: rgba(0, 255, 255, 0.1); border-radius: 4px; overflow: hidden; margin-top: 8px; border: 1px solid rgba(0, 255, 255, 0.2); }
@@ -341,7 +298,6 @@
         
         .village-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; animation: fadeInDown 0.6s ease-out; }
         .back-button { background: var(--glass-bg); border: 1px solid var(--glass-border); color: var(--accent-cyan); padding: 10px 20px; border-radius: 8px; font-family: 'Rajdhani', sans-serif; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.3s ease; text-transform: uppercase; letter-spacing: 1px; }
-        .back-button:active { transform: scale(0.95); background: rgba(0, 255, 255, 0.1); }
         .village-title { font-family: 'Orbitron', sans-serif; font-size: 18px; font-weight: 700; color: var(--accent-cyan); text-transform: uppercase; letter-spacing: 1.5px; }
         
         .village-cards-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
@@ -350,7 +306,6 @@
         .village-card-id { font-size: 13px; font-weight: 600; color: var(--accent-cyan); text-transform: uppercase; letter-spacing: 0.5px; }
         .village-card-status { display: flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 600; transition: color 0.3s; }
         .status-dot { width: 6px; height: 6px; border-radius: 50%; transition: background 0.3s; }
-        
         .village-card-body { display: flex; flex-direction: column; gap: 10px; }
         .village-metric { display: flex; justify-content: space-between; align-items: center; }
         .village-metric-label { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.3px; }
