@@ -5,9 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="theme-color" content="#0a0e17">
     <title>Microgrid Monitor</title>
-    
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    
     <script type="module">
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
         import { getDatabase, ref, onValue } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
@@ -27,21 +25,19 @@
 
         const BUFFER_SIZE = 30;  
         
-        const plantBuffers = { timestamps: [], solarPower: [], solarTemp: [], loadPower: [], batterySOC: [], batteryTemp: [] };
+        // --- HISTORICAL DATA STORAGE ---
+        let plantBuffers = { timestamps: [], solarPower: [], solarTemp: [], loadPower: [], batterySOC: [], batteryTemp: [] };
+        const savedHistory = localStorage.getItem('microgrid_history');
+        if (savedHistory) {
+            try { plantBuffers = JSON.parse(savedHistory); } catch (e) { console.error("Could not load history"); }
+        }
+
         const currentPlantData = { solarPower: 0, solarTemp: 0, loadPower: 0, batterySOC: 0, batteryTemp: 0, timestamp: 0 };
         const houseData = {};
         for (let id = 101; id <= 110; id++) { houseData[id] = { usage_kwh: 0 }; }
         
-        window.showDashboardView = () => {
-            document.getElementById('dashboardView').style.display = 'block';
-            document.getElementById('villageView').style.display = 'none';
-        };
-        
-        window.showVillageView = () => {
-            document.getElementById('dashboardView').style.display = 'none';
-            document.getElementById('villageView').style.display = 'block';
-            updateVillageCards(); 
-        };
+        window.showDashboardView = () => { document.getElementById('dashboardView').style.display = 'block'; document.getElementById('villageView').style.display = 'none'; };
+        window.showVillageView = () => { document.getElementById('dashboardView').style.display = 'none'; document.getElementById('villageView').style.display = 'block'; updateVillageCards(); };
         
         function addToBuffer(buffer, value) {
             buffer.push(value);
@@ -54,8 +50,7 @@
             return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
         }
         
-        let physicsChart = null;
-        let balanceChart = null;
+        let physicsChart = null; let balanceChart = null;
         
         function initializeCharts() {
             const physicsCtx = document.getElementById('physicsChart').getContext('2d');
@@ -82,7 +77,7 @@
         }
         
         function updateDashboardUI() {
-            document.getElementById('solarPowerValue').textContent = currentPlantData.solarPower.toFixed(0);
+            document.getElementById('solarPowerValue').textContent = currentPlantData.solarPower.toLocaleString(undefined, {maximumFractionDigits: 0});
             document.getElementById('batterySOCValue').textContent = currentPlantData.batterySOC.toFixed(1);
             
             const socBar = document.getElementById('socProgressBar');
@@ -99,7 +94,7 @@
             else if (currentPlantData.batteryTemp < 55) tempElement.style.color = '#ffd700';
             else tempElement.style.color = '#ff3860';
             
-            document.getElementById('loadPowerValue').textContent = currentPlantData.loadPower.toFixed(0);
+            document.getElementById('loadPowerValue').textContent = currentPlantData.loadPower.toLocaleString(undefined, {maximumFractionDigits: 0});
         }
 
         function initializeVillageCards() {
@@ -108,8 +103,7 @@
             for (let id = 101; id <= 110; id++) {
                 const card = document.createElement('div');
                 card.className = 'village-card';
-                // VOLTAGE COMPLETELY REMOVED HERE
-                card.innerHTML = `<div class="village-card-header"><div class="village-card-id">House ${id}</div><div class="village-card-status" id="status-color-${id}"><span class="status-dot" id="status-dot-${id}"></span><span id="status-text-${id}">NORMAL</span></div></div><div class="village-card-body"><div class="village-metric"><div class="village-metric-label">Energy Billed</div><div class="village-metric-value"><span id="load-${id}">0.0</span> <span class="village-metric-unit">kWh</span></div></div></div>`;
+                card.innerHTML = `<div class="village-card-header"><div class="village-card-id">House ${id}</div><div class="village-card-status" id="status-color-${id}"><span class="status-dot" id="status-dot-${id}"></span><span id="status-text-${id}">SLAB 1</span></div></div><div class="village-card-body"><div class="village-metric"><div class="village-metric-label">Energy Billed</div><div class="village-metric-value"><span id="load-${id}">0.0</span> <span class="village-metric-unit">kWh</span></div></div></div>`;
                 container.appendChild(card);
             }
         }
@@ -117,11 +111,19 @@
         function updateVillageCards() {
             for (let id = 101; id <= 110; id++) {
                 const house = houseData[id];
-                const isHigh = house.usage_kwh >= 50;
-                document.getElementById(`load-${id}`).textContent = house.usage_kwh.toFixed(1);
-                document.getElementById(`status-color-${id}`).style.color = isHigh ? '#ff3860' : '#00ff88';
-                document.getElementById(`status-dot-${id}`).style.background = isHigh ? '#ff3860' : '#00ff88';
-                document.getElementById(`status-text-${id}`).textContent = isHigh ? 'HIGH TARIFF' : 'NORMAL';
+                const usage = house.usage_kwh;
+                
+                // --- TANGEDCO SLAB LOGIC ---
+                let slabText = "SLAB 1"; let color = "#00ff88"; // Green
+                if (usage > 500) { slabText = "SLAB 5 (PENALTY)"; color = "#ff3860"; } // Red
+                else if (usage > 400) { slabText = "SLAB 4"; color = "#ff6b35"; } // Orange
+                else if (usage > 200) { slabText = "SLAB 3"; color = "#ffd700"; } // Yellow
+                else if (usage > 100) { slabText = "SLAB 2"; color = "#aacc00"; } // Light Green
+                
+                document.getElementById(`load-${id}`).textContent = usage.toFixed(1);
+                document.getElementById(`status-color-${id}`).style.color = color;
+                document.getElementById(`status-dot-${id}`).style.background = color;
+                document.getElementById(`status-text-${id}`).textContent = slabText;
             }
         }
         
@@ -143,6 +145,9 @@
                     addToBuffer(plantBuffers.loadPower, currentPlantData.loadPower);
                     addToBuffer(plantBuffers.batterySOC, currentPlantData.batterySOC);
                     addToBuffer(plantBuffers.batteryTemp, currentPlantData.batteryTemp);
+                    
+                    // Save to local storage so it survives refresh!
+                    localStorage.setItem('microgrid_history', JSON.stringify(plantBuffers));
                     
                     updateDashboardUI();
                     if (physicsChart) physicsChart.update('none');
@@ -169,16 +174,10 @@
         }
         
         window.addEventListener('DOMContentLoaded', () => {
-            initializeVillageCards(); 
-            showDashboardView();
-            initializeCharts();
-            startPlantListener();
-            startHouseListeners();
-            document.getElementById('connectionStatus').textContent = 'LIVE';
-            document.getElementById('connectionStatus').style.color = '#00ff88';
+            initializeVillageCards(); showDashboardView(); initializeCharts(); startPlantListener(); startHouseListeners();
+            document.getElementById('connectionStatus').textContent = 'LIVE'; document.getElementById('connectionStatus').style.color = '#00ff88';
         });
     </script>
-    
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=Orbitron:wght@400;500;700;900&display=swap');
         * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -236,22 +235,17 @@
     <div id="dashboardView" class="app-container">
         <header class="header">
             <div class="logo"><div class="logo-icon">⚡</div><h1>Microgrid Monitor</h1></div>
-            <div class="status-bar">
-                <div class="status-item"><div id="statusIndicator" class="status-indicator"></div><span id="connectionStatus">CONNECTING</span></div>
-            </div>
+            <div class="status-bar"><div class="status-item"><div id="statusIndicator" class="status-indicator"></div><span id="connectionStatus">CONNECTING</span></div></div>
         </header>
-        
         <div class="stats-grid">
             <div class="stat-card"><div class="stat-label">☀️ Solar</div><div class="stat-value"><span id="solarPowerValue">0</span><span class="stat-unit">W</span></div></div>
             <div class="stat-card"><div class="stat-label">🔋 SOC</div><div class="stat-value"><span id="batterySOCValue">0</span><span class="stat-unit">%</span></div><div class="soc-progress-container"><div id="socProgressBar" class="soc-progress-bar" style="width: 0%"></div></div></div>
             <div class="stat-card"><div class="stat-label">🌡️ Battery</div><div class="stat-value"><span id="batteryTempValue">0</span><span class="stat-unit">°C</span></div></div>
             <div class="stat-card load-card" onclick="showVillageView()"><div class="stat-label">⚡ Total Load</div><div class="stat-value"><span id="loadPowerValue">0</span><span class="stat-unit">W</span></div></div>
         </div>
-        
         <div class="card chart-card"><div class="card-header"><div class="card-title">🔬 Physics Correlation</div></div><div class="chart-container"><canvas id="physicsChart"></canvas></div></div>
         <div class="card chart-card"><div class="card-header"><div class="card-title">⚖️ Grid Balance</div></div><div class="chart-container"><canvas id="balanceChart"></canvas></div></div>
     </div>
-    
     <div id="villageView" class="app-container" style="display: none;">
         <div class="village-header"><button class="back-button" onclick="showDashboardView()">← Back</button><div class="village-title">Village Status</div></div>
         <div id="villageCardsContainer" class="village-cards-grid"></div>
