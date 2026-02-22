@@ -167,10 +167,14 @@
                     // --- NEW: TRIGGER THINGSPEAK UPLOAD ON CYCLE RESET ---
                     const currentSolarEnergy = data.solar_energy || 0;
                     
-                    // If energy suddenly drops to near zero, the virtual day/month reset!
+                    /// If energy suddenly drops to near zero, the virtual day/month reset!
                     if (currentSolarEnergy < tsTracker.solar - 5 && !tsTracker.isUploading) {
                         tsTracker.isUploading = true;
                         uploadToThingSpeak(); // Upload the peak values from the day
+                        
+                        // ---> THE FIX: Reset the trackers so it doesn't loop! <---
+                        tsTracker.solar = 0;
+                        for (let i = 101; i <= 107; i++) { tsTracker.houses[i] = 0; }
                         
                         // Prevent double-uploads during the reset window
                         setTimeout(() => { tsTracker.isUploading = false; }, 10000); 
@@ -304,4 +308,5 @@
     </div>
 </body>
 </html>
+
 
