@@ -34,6 +34,32 @@
 
         const currentPlantData = { solarPower: 0, solarTemp: 0, loadPower: 0, batterySOC: 0, batteryTemp: 0, timestamp: 0 };
         const houseData = {};
+        // --- NEW: THINGSPEAK INTEGRATION ---
+        const THINGSPEAK_API_KEY = "LRVMA3B99EVALGW1"; // <-- Paste your key here
+        
+        const tsTracker = {
+            solar: 0,
+            houses: {101:0, 102:0, 103:0, 104:0, 105:0, 106:0, 107:0},
+            isUploading: false
+        };
+
+        function uploadToThingSpeak() {
+            console.log("☁️ Cycle reset detected! Uploading historical data to ThingSpeak...");
+            
+            const url = `https://api.thingspeak.com/update?api_key=${THINGSPEAK_API_KEY}` +
+                        `&field1=${tsTracker.solar.toFixed(2)}` +
+                        `&field2=${tsTracker.houses[101].toFixed(2)}` +
+                        `&field3=${tsTracker.houses[102].toFixed(2)}` +
+                        `&field4=${tsTracker.houses[103].toFixed(2)}` +
+                        `&field5=${tsTracker.houses[104].toFixed(2)}` +
+                        `&field6=${tsTracker.houses[105].toFixed(2)}` +
+                        `&field7=${tsTracker.houses[106].toFixed(2)}` +
+                        `&field8=${tsTracker.houses[107].toFixed(2)}`;
+
+            fetch(url)
+                .then(response => console.log("✅ ThingSpeak Upload Successful!"))
+                .catch(err => console.error("❌ ThingSpeak error:", err));
+        }
         for (let id = 101; id <= 110; id++) { houseData[id] = { usage_kwh: 0 }; }
         
         window.showDashboardView = () => { document.getElementById('dashboardView').style.display = 'block'; document.getElementById('villageView').style.display = 'none'; };
@@ -138,6 +164,24 @@
                     currentPlantData.batterySOC = data.battery_soc || 0;
                     currentPlantData.batteryTemp = data.battery_temp || 0;
                     
+                    // --- NEW: TRIGGER THINGSPEAK UPLOAD ON CYCLE RESET ---
+                    const currentSolarEnergy = data.solar_energy || 0;
+                    
+                    // If energy suddenly drops to near zero, the virtual day/month reset!
+                    if (currentSolarEnergy < tsTracker.solar - 5 && !tsTracker.isUploading) {
+                        tsTracker.isUploading = true;
+                        uploadToThingSpeak(); // Upload the peak values from the day
+                        
+                        // Prevent double-uploads during the reset window
+                        setTimeout(() => { tsTracker.isUploading = false; }, 10000); 
+                    }
+                    
+                    // Always track the highest value to upload
+                    if (currentSolarEnergy > tsTracker.solar) {
+                        tsTracker.solar = currentSolarEnergy;
+                    }
+                    // -----------------------------------------------------
+
                     const timeLabel = formatVirtualTime(data.battery_soh || 0);
                     addToBuffer(plantBuffers.timestamps, timeLabel);
                     addToBuffer(plantBuffers.solarPower, currentPlantData.solarPower);
@@ -146,7 +190,6 @@
                     addToBuffer(plantBuffers.batterySOC, currentPlantData.batterySOC);
                     addToBuffer(plantBuffers.batteryTemp, currentPlantData.batteryTemp);
                     
-                    // Save to local storage so it survives refresh!
                     localStorage.setItem('microgrid_history', JSON.stringify(plantBuffers));
                     
                     updateDashboardUI();
@@ -167,6 +210,15 @@
                     const data = snapshot.val();
                     if (data) {
                         houseData[id].usage_kwh = data.usage_kwh || 0;
+                        
+                        // --- NEW: Track highest house load for ThingSpeak ---
+                        if (id <= 107 && houseData[id].usage_kwh > tsTracker.houses[id]) {
+                            tsTracker.houses[id] = houseData[id].usage_kwh;
+                        }
+                        // If it resets to zero, reset the tracker
+                        if (houseData[id].usage_kwh === 0) { tsTracker.houses[id] = 0; }
+                        // ----------------------------------------------------
+
                         if (document.getElementById('villageView').style.display === 'block') { updateVillageCards(); }
                     }
                 });
@@ -252,3 +304,4 @@
     </div>
 </body>
 </html>
+
