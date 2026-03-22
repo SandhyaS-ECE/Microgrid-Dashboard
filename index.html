@@ -89,7 +89,7 @@
             let totalForecast = 0;
             
             for(let id in houseData) {
-                if(houseData[id].status === 0) activeCount++;
+                if(houseData[id].status === 1) activeCount++;
                 totalForecast += houseData[id].predicted_kwh;
             }
             
