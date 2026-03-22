@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="theme-color" content="#0a0e17">
-    <title>Microgrid Monitor</title>
+    <title>Rural Microgrid: Smart Billing Gateway</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <script type="module">
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
@@ -23,290 +23,235 @@
         const app = initializeApp(firebaseConfig);
         const database = getDatabase(app);
 
-        const BUFFER_SIZE = 30;  
-        
-        // --- HISTORICAL DATA STORAGE ---
-        let plantBuffers = { timestamps: [], solarPower: [], solarTemp: [], loadPower: [], batterySOC: [], batteryTemp: [] };
-        const savedHistory = localStorage.getItem('microgrid_history');
-        if (savedHistory) {
-            try { plantBuffers = JSON.parse(savedHistory); } catch (e) { console.error("Could not load history"); }
+        // --- GLOBAL STATE ---
+        const houseData = {};
+        let villageLoadBuffer = [];
+        let totalVillageLoad = 0;
+        let loadChart = null;
+
+        // Initialize empty objects for houses 101-110
+        for (let id = 101; id <= 110; id++) { 
+            houseData[id] = { power: 0, actual_kwh: 0, predicted_kwh: 0, status: 1 }; 
         }
 
-        const currentPlantData = { solarPower: 0, solarTemp: 0, loadPower: 0, batterySOC: 0, batteryTemp: 0, timestamp: 0 };
-        const houseData = {};
-        // --- NEW: THINGSPEAK INTEGRATION ---
-        const THINGSPEAK_API_KEY = "LRVMA3B99EVALGW1"; // <-- Paste your key here
-        
-        const tsTracker = {
-            solar: 0,
-            houses: {101:0, 102:0, 103:0, 104:0, 105:0, 106:0, 107:0},
-            isUploading: false
+        // --- NAVIGATION ---
+        window.showDashboardView = () => { 
+            document.getElementById('dashboardView').style.display = 'block'; 
+            document.getElementById('villageView').style.display = 'none'; 
+        };
+        window.showVillageView = () => { 
+            document.getElementById('dashboardView').style.display = 'none'; 
+            document.getElementById('villageView').style.display = 'block'; 
+            updateVillageCards(); 
         };
 
-        function uploadToThingSpeak() {
-            console.log("☁️ Cycle reset detected! Uploading historical data to ThingSpeak...");
-            
-            const url = `https://api.thingspeak.com/update?api_key=${THINGSPEAK_API_KEY}` +
-                        `&field1=${tsTracker.solar.toFixed(2)}` +
-                        `&field2=${tsTracker.houses[101].toFixed(2)}` +
-                        `&field3=${tsTracker.houses[102].toFixed(2)}` +
-                        `&field4=${tsTracker.houses[103].toFixed(2)}` +
-                        `&field5=${tsTracker.houses[104].toFixed(2)}` +
-                        `&field6=${tsTracker.houses[105].toFixed(2)}` +
-                        `&field7=${tsTracker.houses[106].toFixed(2)}` +
-                        `&field8=${tsTracker.houses[107].toFixed(2)}`;
-
-            fetch(url)
-                .then(response => console.log("✅ ThingSpeak Upload Successful!"))
-                .catch(err => console.error("❌ ThingSpeak error:", err));
-        }
-        for (let id = 101; id <= 110; id++) { houseData[id] = { usage_kwh: 0 }; }
-        
-        window.showDashboardView = () => { document.getElementById('dashboardView').style.display = 'block'; document.getElementById('villageView').style.display = 'none'; };
-        window.showVillageView = () => { document.getElementById('dashboardView').style.display = 'none'; document.getElementById('villageView').style.display = 'block'; updateVillageCards(); };
-        
-        function addToBuffer(buffer, value) {
-            buffer.push(value);
-            if (buffer.length > BUFFER_SIZE) buffer.shift();  
-        }
-        
-        function formatVirtualTime(vHour) {
-            const h = Math.floor(vHour);
-            const m = Math.floor((vHour % 1) * 60);
-            return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
-        }
-        
-        let physicsChart = null; let balanceChart = null;
-        
+        // --- CHARTS ---
         function initializeCharts() {
-            const physicsCtx = document.getElementById('physicsChart').getContext('2d');
-            physicsChart = new Chart(physicsCtx, {
+            const ctx = document.getElementById('villageLoadChart').getContext('2d');
+            loadChart = new Chart(ctx, {
                 type: 'line',
-                data: { labels: plantBuffers.timestamps, datasets: [
-                    { label: 'Solar Power (W)', data: plantBuffers.solarPower, borderColor: '#00ff88', backgroundColor: 'rgba(0, 255, 136, 0.15)', borderWidth: 2.5, fill: true, tension: 0.4, yAxisID: 'y-power', pointRadius: 0 },
-                    { label: 'Panel Temp (°C)', data: plantBuffers.solarTemp, borderColor: '#ff6b35', backgroundColor: 'transparent', borderWidth: 2.5, borderDash: [6, 4], fill: false, tension: 0.4, yAxisID: 'y-temp', pointRadius: 0 }
-                ]},
-                options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
-                    scales: { x: { grid: { color: 'rgba(0, 255, 255, 0.08)' }, ticks: { color: '#00ffff' } }, 'y-power': { type: 'linear', position: 'left', title: { display: true, text: 'Power (W)', color: '#00ff88' }, grid: { color: 'rgba(0, 255, 136, 0.08)' }, ticks: { color: '#00ff88' } }, 'y-temp': { type: 'linear', position: 'right', title: { display: true, text: 'Temp (°C)', color: '#ff6b35' }, grid: { drawOnChartArea: false }, ticks: { color: '#ff6b35' } } }, animation: { duration: 0 } }
-            });
-            
-            const balanceCtx = document.getElementById('balanceChart').getContext('2d');
-            balanceChart = new Chart(balanceCtx, {
-                type: 'line',
-                data: { labels: plantBuffers.timestamps, datasets: [
-                    { label: 'Solar Generation (W)', data: plantBuffers.solarPower, borderColor: '#00ff88', backgroundColor: 'rgba(0, 255, 136, 0.2)', borderWidth: 3, fill: true, tension: 0.4, pointRadius: 0 },
-                    { label: 'Total Load (W)', data: plantBuffers.loadPower, borderColor: '#ff3860', backgroundColor: 'rgba(255, 56, 96, 0.2)', borderWidth: 3, fill: true, tension: 0.4, pointRadius: 0 }
-                ]},
-                options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
-                    scales: { x: { grid: { color: 'rgba(0, 255, 255, 0.08)' }, ticks: { color: '#00ffff' } }, y: { title: { display: true, text: 'Power (W)', color: '#00ffff' }, grid: { color: 'rgba(0, 255, 255, 0.08)' }, ticks: { color: '#00ffff' } } }, animation: { duration: 0 } }
-            });
-        }
-        
-        function updateDashboardUI() {
-            document.getElementById('solarPowerValue').textContent = currentPlantData.solarPower.toLocaleString(undefined, {maximumFractionDigits: 0});
-            document.getElementById('batterySOCValue').textContent = currentPlantData.batterySOC.toFixed(1);
-            
-            const socBar = document.getElementById('socProgressBar');
-            socBar.style.width = `${currentPlantData.batterySOC}%`;
-            
-            if (currentPlantData.batterySOC > 80) socBar.style.background = 'linear-gradient(90deg, #00ff88, #00cc6f)';
-            else if (currentPlantData.batterySOC > 50) socBar.style.background = 'linear-gradient(90deg, #ffd700, #ffb700)';
-            else if (currentPlantData.batterySOC > 20) socBar.style.background = 'linear-gradient(90deg, #ff9500, #ff7700)';
-            else socBar.style.background = 'linear-gradient(90deg, #ff3860, #cc2a4d)';
-            
-            const tempElement = document.getElementById('batteryTempValue');
-            tempElement.textContent = currentPlantData.batteryTemp.toFixed(1);
-            if (currentPlantData.batteryTemp < 45) tempElement.style.color = '#00ff88';
-            else if (currentPlantData.batteryTemp < 55) tempElement.style.color = '#ffd700';
-            else tempElement.style.color = '#ff3860';
-            
-            document.getElementById('loadPowerValue').textContent = currentPlantData.loadPower.toLocaleString(undefined, {maximumFractionDigits: 0});
-        }
-
-        function initializeVillageCards() {
-            const container = document.getElementById('villageCardsContainer');
-            container.innerHTML = '';  
-            for (let id = 101; id <= 110; id++) {
-                const card = document.createElement('div');
-                card.className = 'village-card';
-                card.innerHTML = `<div class="village-card-header"><div class="village-card-id">House ${id}</div><div class="village-card-status" id="status-color-${id}"><span class="status-dot" id="status-dot-${id}"></span><span id="status-text-${id}">SLAB 1</span></div></div><div class="village-card-body"><div class="village-metric"><div class="village-metric-label">Energy Billed</div><div class="village-metric-value"><span id="load-${id}">0.0</span> <span class="village-metric-unit">kWh</span></div></div></div>`;
-                container.appendChild(card);
-            }
-        }
-        
-        function updateVillageCards() {
-            for (let id = 101; id <= 110; id++) {
-                const house = houseData[id];
-                const usage = house.usage_kwh;
-                
-                // --- TANGEDCO SLAB LOGIC ---
-                let slabText = "SLAB 1"; let color = "#00ff88"; // Green
-                if (usage > 500) { slabText = "SLAB 5 (PENALTY)"; color = "#ff3860"; } // Red
-                else if (usage > 400) { slabText = "SLAB 4"; color = "#ff6b35"; } // Orange
-                else if (usage > 200) { slabText = "SLAB 3"; color = "#ffd700"; } // Yellow
-                else if (usage > 100) { slabText = "SLAB 2"; color = "#aacc00"; } // Light Green
-                
-                document.getElementById(`load-${id}`).textContent = usage.toFixed(1);
-                document.getElementById(`status-color-${id}`).style.color = color;
-                document.getElementById(`status-dot-${id}`).style.background = color;
-                document.getElementById(`status-text-${id}`).textContent = slabText;
-            }
-        }
-        
-        function startPlantListener() {
-            const plantRef = ref(database, '/microgrid/plant');
-            onValue(plantRef, (snapshot) => {
-                const data = snapshot.val();
-                if (data) {
-                    currentPlantData.solarPower = data.solar_power || 0;
-                    currentPlantData.solarTemp = data.solar_temp || 0;
-                    currentPlantData.loadPower = data.load_power || 0;
-                    currentPlantData.batterySOC = data.battery_soc || 0;
-                    currentPlantData.batteryTemp = data.battery_temp || 0;
-                    
-                    // --- NEW: TRIGGER THINGSPEAK UPLOAD ON CYCLE RESET ---
-                    const currentSolarEnergy = data.solar_energy || 0;
-                    
-                    /// If energy suddenly drops to near zero, the virtual day/month reset!
-                    if (currentSolarEnergy < tsTracker.solar - 5 && !tsTracker.isUploading) {
-                        tsTracker.isUploading = true;
-                        uploadToThingSpeak(); // Upload the peak values from the day
-                        
-                        // ---> THE FIX: Reset the trackers so it doesn't loop! <---
-                        tsTracker.solar = 0;
-                        for (let i = 101; i <= 107; i++) { tsTracker.houses[i] = 0; }
-                        
-                        // Prevent double-uploads during the reset window
-                        setTimeout(() => { tsTracker.isUploading = false; }, 10000); 
-                    }
-                    
-                    // Always track the highest value to upload
-                    if (currentSolarEnergy > tsTracker.solar) {
-                        tsTracker.solar = currentSolarEnergy;
-                    }
-                    // -----------------------------------------------------
-
-                    const timeLabel = formatVirtualTime(data.battery_soh || 0);
-                    addToBuffer(plantBuffers.timestamps, timeLabel);
-                    addToBuffer(plantBuffers.solarPower, currentPlantData.solarPower);
-                    addToBuffer(plantBuffers.solarTemp, currentPlantData.solarTemp);
-                    addToBuffer(plantBuffers.loadPower, currentPlantData.loadPower);
-                    addToBuffer(plantBuffers.batterySOC, currentPlantData.batterySOC);
-                    addToBuffer(plantBuffers.batteryTemp, currentPlantData.batteryTemp);
-                    
-                    localStorage.setItem('microgrid_history', JSON.stringify(plantBuffers));
-                    
-                    updateDashboardUI();
-                    if (physicsChart) physicsChart.update('none');
-                    if (balanceChart) balanceChart.update('none');
-                    
-                    const statusDot = document.getElementById('statusIndicator');
-                    statusDot.classList.add('pulse-animation');
-                    setTimeout(() => statusDot.classList.remove('pulse-animation'), 1000);
+                data: {
+                    labels: Array(20).fill(''),
+                    datasets: [{
+                        label: 'Total Grid Load (W)',
+                        data: Array(20).fill(0),
+                        borderColor: '#00ffff',
+                        backgroundColor: 'rgba(0, 255, 255, 0.1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8892b0' } },
+                        x: { display: false }
+                    },
+                    animation: { duration: 0 }
                 }
             });
         }
-        
-        function startHouseListeners() {
+
+        // --- UI UPDATES ---
+        function updateGlobalStats() {
+            document.getElementById('totalLoadValue').textContent = totalVillageLoad.toFixed(0);
+            let activeCount = 0;
+            let totalForecast = 0;
+            
+            for(let id in houseData) {
+                if(houseData[id].status === 0) activeCount++;
+                totalForecast += houseData[id].predicted_kwh;
+            }
+            
+            document.getElementById('activeMetersValue').textContent = activeCount;
+            document.getElementById('avgForecastValue').textContent = (totalForecast / 10).toFixed(1);
+        }
+
+        function updateVillageCards() {
+            const container = document.getElementById('villageCardsContainer');
+            if (container.innerHTML === "") {
+                for (let id = 101; id <= 110; id++) {
+                    const card = document.createElement('div');
+                    card.className = 'village-card';
+                    card.id = `card-${id}`;
+                    card.innerHTML = `
+                        <div class="village-card-header">
+                            <div class="village-card-id">House ${id}</div>
+                            <div class="village-card-status" id="status-container-${id}">
+                                <span class="status-dot" id="dot-${id}"></span>
+                                <span id="status-text-${id}">OFFLINE</span>
+                            </div>
+                        </div>
+                        <div class="village-card-body">
+                            <div class="village-metric">
+                                <div class="village-metric-label">Billed (Actual)</div>
+                                <div class="village-metric-value"><span id="billed-${id}">0.0</span> <span class="unit">kWh</span></div>
+                            </div>
+                            <div class="village-metric">
+                                <div class="village-metric-label">Forecast (30D)</div>
+                                <div class="village-metric-value forecast"><span id="forecast-${id}">0.0</span> <span class="unit">kWh</span></div>
+                            </div>
+                            <div class="slab-badge" id="slab-${id}">SLAB 1</div>
+                        </div>`;
+                    container.appendChild(card);
+                }
+            }
+
             for (let id = 101; id <= 110; id++) {
-                const houseRef = ref(database, `/microgrid/house_${id}`);
+                const h = houseData[id];
+                
+                // Status Mapping (0=OK, 1=OFFLINE, 2=FAULT)
+                const statusDot = document.getElementById(`dot-${id}`);
+                const statusText = document.getElementById(`status-text-${id}`);
+                if(h.status === 0) { statusDot.style.backgroundColor = "#00ff88"; statusText.textContent = "ONLINE"; }
+                else if(h.status === 2) { statusDot.style.backgroundColor = "#ffd700"; statusText.textContent = "FAULT"; }
+                else { statusDot.style.backgroundColor = "#ff3860"; statusText.textContent = "OFFLINE"; }
+
+                // TANGEDCO Slab Logic
+                const billed = h.actual_kwh;
+                const forecast = h.predicted_kwh;
+                let slab = "SLAB 1 (Free)"; let color = "#00ff88";
+                if (billed > 500) { slab = "SLAB 5 (Max)"; color = "#ff3860"; }
+                else if (billed > 400) { slab = "SLAB 4"; color = "#ff6b35"; }
+                else if (billed > 200) { slab = "SLAB 3"; color = "#ffd700"; }
+                else if (billed > 100) { slab = "SLAB 2"; color = "#aacc00"; }
+
+                document.getElementById(`billed-${id}`).textContent = billed.toFixed(2);
+                document.getElementById(`forecast-${id}`).textContent = forecast.toFixed(1);
+                const slabBadge = document.getElementById(`slab-${id}`);
+                slabBadge.textContent = slab;
+                slabBadge.style.color = color;
+
+                // Warning Glow if Forecast exceeds current Slab
+                if (forecast > (billed + 20)) {
+                    document.getElementById(`card-${id}`).style.boxShadow = "0 0 15px rgba(255, 215, 0, 0.2)";
+                } else {
+                    document.getElementById(`card-${id}`).style.boxShadow = "none";
+                }
+            }
+        }
+
+        // --- FIREBASE LISTENERS ---
+        function startListeners() {
+            for (let id = 101; id <= 110; id++) {
+                const houseRef = ref(database, `houses/${id}`);
                 onValue(houseRef, (snapshot) => {
                     const data = snapshot.val();
                     if (data) {
-                        houseData[id].usage_kwh = data.usage_kwh || 0;
-                        
-                        // --- NEW: Track highest house load for ThingSpeak ---
-                        if (id <= 107 && houseData[id].usage_kwh > tsTracker.houses[id]) {
-                            tsTracker.houses[id] = houseData[id].usage_kwh;
-                        }
-                        // If it resets to zero, reset the tracker
-                        if (houseData[id].usage_kwh === 0) { tsTracker.houses[id] = 0; }
-                        // ----------------------------------------------------
+                        houseData[id] = {
+                            power: data.power || 0,
+                            actual_kwh: data.actual_kwh || 0,
+                            predicted_kwh: data.predicted_kwh || 0,
+                            status: data.status ?? 1
+                        };
 
-                        if (document.getElementById('villageView').style.display === 'block') { updateVillageCards(); }
+                        // Recalculate total grid load
+                        totalVillageLoad = 0;
+                        for(let i in houseData) totalVillageLoad += houseData[i].power;
+                        
+                        // Update Chart
+                        loadChart.data.datasets[0].data.push(totalVillageLoad);
+                        loadChart.data.datasets[0].data.shift();
+                        loadChart.update('none');
+
+                        updateGlobalStats();
+                        if (document.getElementById('villageView').style.display === 'block') { 
+                            updateVillageCards(); 
+                        }
+                        
+                        // Pulse the global status indicator
+                        const indicator = document.getElementById('statusIndicator');
+                        indicator.classList.add('pulse-animation');
+                        setTimeout(() => indicator.classList.remove('pulse-animation'), 500);
                     }
                 });
             }
         }
-        
+
         window.addEventListener('DOMContentLoaded', () => {
-            initializeVillageCards(); showDashboardView(); initializeCharts(); startPlantListener(); startHouseListeners();
-            document.getElementById('connectionStatus').textContent = 'LIVE'; document.getElementById('connectionStatus').style.color = '#00ff88';
+            initializeCharts();
+            startListeners();
+            updateGlobalStats();
         });
     </script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=Orbitron:wght@400;500;700;900&display=swap');
-        * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-        :root { --bg-primary: #0a0e17; --bg-secondary: #141922; --bg-card: rgba(20, 25, 34, 0.85); --accent-cyan: #00ffff; --accent-green: #00ff88; --accent-red: #ff3860; --accent-orange: #ff6b35; --accent-yellow: #ffd700; --text-primary: #ffffff; --text-secondary: #8892b0; --glass-bg: rgba(20, 25, 34, 0.7); --glass-border: rgba(0, 255, 255, 0.2); --glass-shadow: 0 8px 32px 0 rgba(0, 255, 255, 0.15); }
-        body { font-family: 'Rajdhani', sans-serif; background: linear-gradient(135deg, #0a0e17 0%, #1a1f2e 100%); color: var(--text-primary); min-height: 100vh; overflow-x: hidden; position: relative; }
-        body::before { content: ''; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-image: linear-gradient(rgba(0, 255, 255, 0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(0, 255, 255, 0.03) 1px, transparent 1px); background-size: 50px 50px; pointer-events: none; z-index: 0; animation: gridMove 20s linear infinite; }
-        @keyframes gridMove { 0% { transform: translate(0, 0); } 100% { transform: translate(50px, 50px); } }
-        .app-container { position: relative; z-index: 1; max-width: 480px; margin: 0 auto; padding: 20px 16px 40px; }
-        .header { text-align: center; margin-bottom: 24px; animation: fadeInDown 0.6s ease-out; }
-        .logo { display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 8px; }
-        .logo-icon { font-size: 32px; animation: rotate 4s linear infinite; }
-        @keyframes rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        h1 { font-family: 'Orbitron', sans-serif; font-size: 24px; font-weight: 700; background: linear-gradient(90deg, var(--accent-cyan), var(--accent-green)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; letter-spacing: 2px; text-transform: uppercase; }
-        .status-bar { display: flex; justify-content: center; align-items: center; gap: 16px; margin-top: 12px; font-size: 12px; color: var(--text-secondary); }
-        .status-item { display: flex; align-items: center; gap: 6px; }
-        .status-indicator { width: 8px; height: 8px; background: var(--accent-green); border-radius: 50%; box-shadow: 0 0 10px var(--accent-green); }
-        .pulse-animation { animation: pulse 1s ease-in-out; }
-        @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.3); } }
-        .card { background: var(--glass-bg); backdrop-filter: blur(12px); border: 1px solid var(--glass-border); border-radius: 16px; padding: 20px; margin-bottom: 20px; box-shadow: var(--glass-shadow); animation: fadeInUp 0.6s ease-out; transition: transform 0.3s ease; }
-        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-        .card-title { font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--accent-cyan); }
-        .stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 20px; }
-        .stat-card { background: var(--glass-bg); backdrop-filter: blur(12px); border: 1px solid var(--glass-border); border-radius: 12px; padding: 16px; text-align: center; animation: fadeInUp 0.6s ease-out; }
-        .stat-label { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
-        .stat-value { font-family: 'Orbitron', sans-serif; font-size: 28px; font-weight: 700; color: var(--accent-green); line-height: 1; }
-        .stat-unit { font-size: 14px; color: var(--text-secondary); margin-left: 4px; }
-        .load-card { grid-column: span 2; cursor: pointer; position: relative; }
-        .load-card::after { content: '→'; position: absolute; right: 20px; top: 50%; transform: translateY(-50%); font-size: 24px; color: var(--accent-cyan); opacity: 0.7; }
-        .load-card:hover::after { opacity: 1; animation: slideRight 0.6s ease-in-out infinite; }
-        @keyframes slideRight { 0%, 100% { transform: translateY(-50%) translateX(0); } 50% { transform: translateY(-50%) translateX(5px); } }
-        .soc-progress-container { height: 8px; background: rgba(0, 255, 255, 0.1); border-radius: 4px; overflow: hidden; margin-top: 8px; border: 1px solid rgba(0, 255, 255, 0.2); }
-        .soc-progress-bar { height: 100%; background: linear-gradient(90deg, var(--accent-green), #00cc6f); border-radius: 4px; transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1); }
-        .chart-card { margin-bottom: 20px; }
-        .chart-container { position: relative; height: 260px; margin-top: 16px; }
-        .village-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; animation: fadeInDown 0.6s ease-out; }
-        .back-button { background: var(--glass-bg); border: 1px solid var(--glass-border); color: var(--accent-cyan); padding: 10px 20px; border-radius: 8px; font-family: 'Rajdhani', sans-serif; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.3s ease; text-transform: uppercase; letter-spacing: 1px; }
-        .village-title { font-family: 'Orbitron', sans-serif; font-size: 18px; font-weight: 700; color: var(--accent-cyan); text-transform: uppercase; letter-spacing: 1.5px; }
-        .village-cards-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
-        .village-card { background: var(--glass-bg); backdrop-filter: blur(12px); border: 1px solid var(--glass-border); border-radius: 12px; padding: 14px; animation: fadeInUp 0.6s ease-out; }
-        .village-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid rgba(0, 255, 255, 0.1); }
-        .village-card-id { font-size: 13px; font-weight: 600; color: var(--accent-cyan); text-transform: uppercase; letter-spacing: 0.5px; }
-        .village-card-status { display: flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 600; transition: color 0.3s; }
-        .status-dot { width: 6px; height: 6px; border-radius: 50%; transition: background 0.3s; }
-        .village-card-body { display: flex; flex-direction: column; gap: 10px; }
-        .village-metric { display: flex; justify-content: space-between; align-items: center; }
-        .village-metric-label { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.3px; }
-        .village-metric-value { font-family: 'Orbitron', sans-serif; font-size: 16px; font-weight: 700; color: var(--accent-green); transition: color 0.3s; }
-        .village-metric-unit { font-size: 11px; color: var(--text-secondary); font-weight: 400; }
-        @keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes fadeInDown { from { opacity: 0; transform: translateY(-20px); } to { opacity: 1; transform: translateY(0); } }
-        @media (max-width: 360px) { .app-container { padding: 16px 12px 40px; } h1 { font-size: 20px; } .stat-value { font-size: 24px; } .chart-container { height: 220px; } .village-cards-grid { grid-template-columns: 1fr; } }
+        @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&family=Orbitron:wght@500;700&display=swap');
+        :root { --bg: #0a0e17; --glass: rgba(20, 25, 34, 0.8); --cyan: #00ffff; --green: #00ff88; --text: #ffffff; }
+        body { font-family: 'Rajdhani', sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; }
+        .app-container { max-width: 500px; margin: 0 auto; }
+        header { text-align: center; margin-bottom: 30px; }
+        h1 { font-family: 'Orbitron', sans-serif; font-size: 20px; color: var(--cyan); letter-spacing: 2px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin-bottom: 20px; }
+        .stat-card { background: var(--glass); border: 1px solid rgba(0,255,255,0.2); padding: 20px; border-radius: 15px; text-align: center; }
+        .stat-label { font-size: 12px; color: #8892b0; text-transform: uppercase; margin-bottom: 5px; }
+        .stat-value { font-family: 'Orbitron', sans-serif; font-size: 24px; color: var(--green); }
+        .wide { grid-column: span 2; cursor: pointer; border-color: var(--green); }
+        .chart-card { background: var(--glass); border: 1px solid rgba(255,255,255,0.1); border-radius: 15px; padding: 15px; height: 250px; }
+        
+        /* Village Cards */
+        .village-cards-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+        .village-card { background: var(--glass); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 12px; transition: all 0.3s; }
+        .village-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .village-card-id { font-weight: 700; color: var(--cyan); }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+        .village-card-status { font-size: 10px; font-weight: 700; }
+        .village-metric-label { font-size: 10px; color: #8892b0; }
+        .village-metric-value { font-family: 'Orbitron', sans-serif; font-size: 16px; margin-bottom: 5px; }
+        .forecast { color: var(--cyan); }
+        .unit { font-size: 10px; font-family: 'Rajdhani'; }
+        .slab-badge { font-size: 11px; font-weight: 700; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 5px; margin-top: 5px; }
+        
+        .back-button { background: none; border: 1px solid var(--cyan); color: var(--cyan); padding: 8px 15px; border-radius: 5px; cursor: pointer; margin-bottom: 20px; }
+        .status-indicator { width: 10px; height: 10px; background: var(--green); border-radius: 50%; display: inline-block; margin-right: 10px; }
+        @keyframes pulse { 0% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.5); opacity: 0.5; } 100% { transform: scale(1); opacity: 1; } }
+        .pulse-animation { animation: pulse 0.5s ease-in-out; }
     </style>
 </head>
 <body>
     <div id="dashboardView" class="app-container">
-        <header class="header">
-            <div class="logo"><div class="logo-icon">⚡</div><h1>Microgrid Monitor</h1></div>
-            <div class="status-bar"><div class="status-item"><div id="statusIndicator" class="status-indicator"></div><span id="connectionStatus">CONNECTING</span></div></div>
+        <header>
+            <h1><span id="statusIndicator" class="status-indicator"></span>MICROGRID GATEWAY</h1>
         </header>
         <div class="stats-grid">
-            <div class="stat-card"><div class="stat-label">☀️ Solar</div><div class="stat-value"><span id="solarPowerValue">0</span><span class="stat-unit">W</span></div></div>
-            <div class="stat-card"><div class="stat-label">🔋 SOC</div><div class="stat-value"><span id="batterySOCValue">0</span><span class="stat-unit">%</span></div><div class="soc-progress-container"><div id="socProgressBar" class="soc-progress-bar" style="width: 0%"></div></div></div>
-            <div class="stat-card"><div class="stat-label">🌡️ Battery</div><div class="stat-value"><span id="batteryTempValue">0</span><span class="stat-unit">°C</span></div></div>
-            <div class="stat-card load-card" onclick="showVillageView()"><div class="stat-label">⚡ Total Load</div><div class="stat-value"><span id="loadPowerValue">0</span><span class="stat-unit">W</span></div></div>
+            <div class="stat-card"><div class="stat-label">Active Meters</div><div class="stat-value" id="activeMetersValue">0</div></div>
+            <div class="stat-card"><div class="stat-label">Avg Forecast</div><div class="stat-value" id="avgForecastValue">0</div><span class="unit">kWh</span></div>
+            <div class="stat-card wide" onclick="showVillageView()">
+                <div class="stat-label">Live Village Load</div>
+                <div class="stat-value" id="totalLoadValue">0</div><span class="unit">WATTS</span>
+            </div>
         </div>
-        <div class="card chart-card"><div class="card-header"><div class="card-title">🔬 Physics Correlation</div></div><div class="chart-container"><canvas id="physicsChart"></canvas></div></div>
-        <div class="card chart-card"><div class="card-header"><div class="card-title">⚖️ Grid Balance</div></div><div class="chart-container"><canvas id="balanceChart"></canvas></div></div>
+        <div class="chart-card">
+            <div class="stat-label">Grid Load Trend</div>
+            <canvas id="villageLoadChart"></canvas>
+        </div>
     </div>
+
     <div id="villageView" class="app-container" style="display: none;">
-        <div class="village-header"><button class="back-button" onclick="showDashboardView()">← Back</button><div class="village-title">Village Status</div></div>
+        <button class="back-button" onclick="showDashboardView()">← DASHBOARD</button>
         <div id="villageCardsContainer" class="village-cards-grid"></div>
     </div>
 </body>
 </html>
-
-
