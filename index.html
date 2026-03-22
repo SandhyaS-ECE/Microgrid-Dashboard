@@ -66,10 +66,23 @@
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
+                    options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
                     scales: {
-                        y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8892b0' } },
-                        x: { display: false }
+                        y: { 
+                            grid: { color: 'rgba(255,255,255,0.05)' }, 
+                            ticks: { color: '#8892b0' } 
+                        },
+                        // We turn the X-axis display to TRUE and add styling
+                        x: { 
+                            display: true, 
+                            grid: { display: false }, 
+                            ticks: { color: '#8892b0', maxTicksLimit: 6 } 
+                        }
                     },
+                    animation: { duration: 0 }
+                }
                     animation: { duration: 0 }
                 }
             });
@@ -123,12 +136,28 @@
             for (let id = 101; id <= 110; id++) {
                 const h = houseData[id];
                 
-                // Status Mapping (0=OK, 1=OFFLINE, 2=FAULT)
+                // --- CORRECTED Status Mapping (ESP32 Enum Sync) ---
+                // 0 = PENDING, 1 = OK, 2 = OFFLINE, 3 = FAULT
                 const statusDot = document.getElementById(`dot-${id}`);
                 const statusText = document.getElementById(`status-text-${id}`);
-                if(h.status === 0) { statusDot.style.backgroundColor = "#00ff88"; statusText.textContent = "ONLINE"; }
-                else if(h.status === 2) { statusDot.style.backgroundColor = "#ffd700"; statusText.textContent = "FAULT"; }
-                else { statusDot.style.backgroundColor = "#ff3860"; statusText.textContent = "OFFLINE"; }
+                
+                if (h.status === 1) { 
+                    statusDot.style.backgroundColor = "#00ff88"; // Green
+                    statusText.textContent = "ONLINE"; 
+                } 
+                else if (h.status === 2) { 
+                    statusDot.style.backgroundColor = "#ff3860"; // Red
+                    statusText.textContent = "OFFLINE"; 
+                } 
+                else if (h.status === 3) { 
+                    statusDot.style.backgroundColor = "#ffd700"; // Yellow
+                    statusText.textContent = "FAULT"; 
+                } 
+                else { 
+                    // Status 0 (NODE_PENDING) or missing data
+                    statusDot.style.backgroundColor = "#8892b0"; // Gray
+                    statusText.textContent = "WAITING..."; 
+                }
 
                 // TANGEDCO Slab Logic
                 const billed = h.actual_kwh;
@@ -161,21 +190,17 @@
                 onValue(houseRef, (snapshot) => {
                     const data = snapshot.val();
                     if (data) {
+                        // Inside startListeners()...
                         houseData[id] = {
                             power: data.power || 0,
                             actual_kwh: data.actual_kwh || 0,
                             predicted_kwh: data.predicted_kwh || 0,
-                            status: data.status ?? 1
+                            status: data.status ?? 0  // <--- Change this to 0
                         };
 
                         // Recalculate total grid load
                         totalVillageLoad = 0;
                         for(let i in houseData) totalVillageLoad += houseData[i].power;
-                        
-                        // Update Chart
-                        loadChart.data.datasets[0].data.push(totalVillageLoad);
-                        loadChart.data.datasets[0].data.shift();
-                        loadChart.update('none');
 
                         updateGlobalStats();
                         if (document.getElementById('villageView').style.display === 'block') { 
@@ -191,10 +216,28 @@
             }
         }
 
-        window.addEventListener('DOMContentLoaded', () => {
+       window.addEventListener('DOMContentLoaded', () => {
             initializeCharts();
             startListeners();
             updateGlobalStats();
+
+            // --- THE NEW SMOOTH GRAPHING LOOP ---
+            setInterval(() => {
+                // 1. Get the current time (HH:MM:SS)
+                const now = new Date();
+                const timeString = now.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+                // 2. Push the new time to the X-Axis
+                loadChart.data.labels.push(timeString);
+                loadChart.data.labels.shift();
+
+                // 3. Push the current total load to the Y-Axis
+                loadChart.data.datasets[0].data.push(totalVillageLoad);
+                loadChart.data.datasets[0].data.shift();
+
+                // 4. Update the chart smoothly
+                loadChart.update('none');
+            }, 2000); // Updates every 2 seconds
         });
     </script>
     <style>
