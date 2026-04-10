@@ -86,10 +86,10 @@ const char* WIFI_PASS        = "IOT123456" ;
 
 // Firebase Realtime Database
 const char* FIREBASE_HOST    = "https://solaris-4ca9a-default-rtdb.asia-southeast1.firebasedatabase.app/";
-const char* FIREBASE_AUTH    = "re46c6OVCWATUXGwSOH9NoQFUysqPgS0xx4SdY2s";
+const char* FIREBASE_AUTH    = "Secret";
 
 // Telegram bot
-const char* TELEGRAM_TOKEN   = "8525362419:AAEuT8kG6ViWQiQM0oylgeEHslZGN6hscuI";
+const char* TELEGRAM_TOKEN   = "Secret";
 const char* TELEGRAM_CHAT_ID = "6886162366" ;
 
 // LoRa hardware pins (adjust to your PCB)
